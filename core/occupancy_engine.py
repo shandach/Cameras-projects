@@ -1,0 +1,228 @@
+"""
+Occupancy Engine - Time tracking and status logic
+
+Implements the state machine:
+- VACANT → CHECKING_ENTRY (person enters)
+- CHECKING_ENTRY → OCCUPIED (stays 3+ sec) → timer starts
+- CHECKING_ENTRY → VACANT (leaves < 3 sec)
+- OCCUPIED → CHECKING_EXIT (person leaves) → timer paused
+- CHECKING_EXIT → OCCUPIED (returns ≤ 10 sec) → timer continues
+- CHECKING_EXIT → VACANT (gone > 10 sec) → session saved to DB
+"""
+import time
+import sys
+from pathlib import Path
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Callable
+from datetime import datetime
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import ENTRY_THRESHOLD, EXIT_THRESHOLD
+from database.db import db
+
+
+class ZoneState(Enum):
+    """Zone occupancy states"""
+    VACANT = "VACANT"
+    CHECKING_ENTRY = "CHECKING_ENTRY"
+    OCCUPIED = "OCCUPIED"
+    CHECKING_EXIT = "CHECKING_EXIT"
+
+
+@dataclass
+class ZoneTracker:
+    """Tracks state and time for a single zone"""
+    zone_id: int
+    state: ZoneState = ZoneState.VACANT
+    
+    # Entry tracking
+    entry_start_time: Optional[float] = None
+    
+    # Exit tracking
+    exit_start_time: Optional[float] = None
+    
+    # Timer tracking
+    timer_start_time: Optional[float] = None
+    accumulated_time: float = 0.0  # Time accumulated before pause
+    
+    # Session tracking
+    session_start: Optional[datetime] = None
+    
+    def get_elapsed_time(self) -> float:
+        """Get total elapsed time for current session"""
+        if self.timer_start_time is None:
+            return self.accumulated_time
+        
+        current_time = time.time() - self.timer_start_time
+        return self.accumulated_time + current_time
+    
+    def get_display_status(self) -> str:
+        """Get human-readable status for display"""
+        if self.state == ZoneState.VACANT:
+            return "VACANT"
+        else:
+            return "OCCUPIED"
+    
+    def get_display_color(self) -> str:
+        """Get color status: occupied = red, vacant = green"""
+        return "OCCUPIED" if self.state != ZoneState.VACANT else "VACANT"
+
+
+class OccupancyEngine:
+    """
+    Manages occupancy state and time tracking for multiple zones
+    
+    Timing logic per TZ:
+    - 3 second entry confirmation
+    - 10 second exit grace period
+    """
+    
+    def __init__(self):
+        self.trackers: Dict[int, ZoneTracker] = {}
+        self.on_session_complete: Optional[Callable] = None
+    
+    def get_or_create_tracker(self, zone_id: int) -> ZoneTracker:
+        """Get or create tracker for a zone"""
+        if zone_id not in self.trackers:
+            self.trackers[zone_id] = ZoneTracker(zone_id=zone_id)
+        return self.trackers[zone_id]
+    
+    def update(self, zone_id: int, is_person_present: bool):
+        """
+        Update zone state based on person presence
+        
+        Args:
+            zone_id: ID of the zone
+            is_person_present: Whether a person is currently detected in zone
+        """
+        tracker = self.get_or_create_tracker(zone_id)
+        current_time = time.time()
+        
+        if tracker.state == ZoneState.VACANT:
+            if is_person_present:
+                # Person entered - start entry check
+                tracker.state = ZoneState.CHECKING_ENTRY
+                tracker.entry_start_time = current_time
+                print(f"🚶 Zone {zone_id}: Person entered, checking for 3 seconds...")
+        
+        elif tracker.state == ZoneState.CHECKING_ENTRY:
+            if is_person_present:
+                # Check if person stayed long enough
+                elapsed = current_time - tracker.entry_start_time
+                if elapsed >= ENTRY_THRESHOLD:
+                    # Confirmed entry - start timer
+                    tracker.state = ZoneState.OCCUPIED
+                    tracker.timer_start_time = current_time
+                    tracker.accumulated_time = 0.0
+                    tracker.session_start = datetime.now()
+                    print(f"✅ Zone {zone_id}: Entry confirmed, timer started")
+            else:
+                # Person left before confirmation
+                tracker.state = ZoneState.VACANT
+                tracker.entry_start_time = None
+                print(f"👋 Zone {zone_id}: Person left before 3 seconds, returning to VACANT")
+        
+        elif tracker.state == ZoneState.OCCUPIED:
+            if not is_person_present:
+                # Person left - pause timer and start exit check
+                if tracker.timer_start_time:
+                    tracker.accumulated_time += (current_time - tracker.timer_start_time)
+                    tracker.timer_start_time = None
+                
+                tracker.state = ZoneState.CHECKING_EXIT
+                tracker.exit_start_time = current_time
+                print(f"⏸️ Zone {zone_id}: Person left, timer paused, waiting 10 seconds...")
+        
+        elif tracker.state == ZoneState.CHECKING_EXIT:
+            if is_person_present:
+                # Person returned - resume timer
+                tracker.state = ZoneState.OCCUPIED
+                tracker.timer_start_time = current_time
+                tracker.exit_start_time = None
+                print(f"🔄 Zone {zone_id}: Person returned, timer resumed")
+            else:
+                # Check if grace period expired
+                elapsed = current_time - tracker.exit_start_time
+                if elapsed >= EXIT_THRESHOLD:
+                    # Session complete - save to DB
+                    self._complete_session(tracker)
+    
+    def _complete_session(self, tracker: ZoneTracker):
+        """Complete and save a work session"""
+        duration = tracker.accumulated_time
+        
+        print(f"📝 Zone {tracker.zone_id}: Session complete - {duration:.1f} seconds")
+        
+        # Save to database
+        if tracker.session_start and duration > 0:
+            try:
+                session = db.save_session(
+                    place_id=tracker.zone_id,
+                    start_time=tracker.session_start,
+                    end_time=datetime.now(),
+                    duration_seconds=duration
+                )
+                print(f"💾 Session saved to database: {session}")
+            except Exception as e:
+                print(f"⚠️ Failed to save session: {e}")
+        
+        # Reset tracker
+        tracker.state = ZoneState.VACANT
+        tracker.entry_start_time = None
+        tracker.exit_start_time = None
+        tracker.timer_start_time = None
+        tracker.accumulated_time = 0.0
+        tracker.session_start = None
+        
+        # Callback
+        if self.on_session_complete:
+            self.on_session_complete(tracker.zone_id, duration)
+    
+    def get_zone_status(self, zone_id: int) -> str:
+        """Get display status for zone"""
+        tracker = self.get_or_create_tracker(zone_id)
+        return tracker.get_display_status()
+    
+    def get_zone_time(self, zone_id: int) -> float:
+        """Get elapsed time for zone"""
+        tracker = self.get_or_create_tracker(zone_id)
+        return tracker.get_elapsed_time()
+    
+    def get_all_timers(self) -> Dict[int, float]:
+        """Get all zone timers"""
+        return {
+            zone_id: tracker.get_elapsed_time()
+            for zone_id, tracker in self.trackers.items()
+        }
+    
+    def is_zone_occupied(self, zone_id: int) -> bool:
+        """Check if zone is visually occupied (red)"""
+        tracker = self.get_or_create_tracker(zone_id)
+        return tracker.state != ZoneState.VACANT
+
+
+if __name__ == "__main__":
+    # Test Occupancy Engine
+    import time
+    
+    print("Testing OccupancyEngine...")
+    engine = OccupancyEngine()
+    
+    zone_id = 1
+    
+    # Simulate: person enters
+    print("\n--- Person enters ---")
+    for i in range(5):
+        engine.update(zone_id, is_person_present=True)
+        print(f"Status: {engine.get_zone_status(zone_id)}, Time: {engine.get_zone_time(zone_id):.1f}s")
+        time.sleep(1)
+    
+    # Simulate: person leaves
+    print("\n--- Person leaves ---")
+    for i in range(12):
+        engine.update(zone_id, is_person_present=False)
+        print(f"Status: {engine.get_zone_status(zone_id)}, Time: {engine.get_zone_time(zone_id):.1f}s")
+        time.sleep(1)
+    
+    print("\nTest complete")
