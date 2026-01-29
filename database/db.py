@@ -1,16 +1,18 @@
 """
 Database connection and utilities
+Supports multiple cameras
 """
 import sys
 from pathlib import Path
+from datetime import date, datetime
+from typing import List, Optional
 
-# Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session as DBSession
-from database.models import Base, Place, Session
-from config import DATABASE_PATH, DATABASE_DIR
+from database.models import Base, Camera, Place, Session
+from config import DATABASE_PATH, DATABASE_DIR, CameraConfig
 
 
 class Database:
@@ -37,23 +39,80 @@ class Database:
         """Get database session"""
         return self.SessionLocal()
     
-    def save_place(self, name: str, roi_coordinates: list) -> Place:
+    # ============ Camera Operations ============
+    
+    def get_or_create_camera(self, config: CameraConfig) -> Camera:
+        """Get existing camera or create new one"""
+        with self.get_session() as session:
+            camera = session.query(Camera).filter(
+                Camera.external_id == config.id
+            ).first()
+            
+            if camera:
+                # Update if changed
+                camera.name = config.name
+                camera.rtsp_url = config.url
+                session.commit()
+            else:
+                # Create new
+                camera = Camera(
+                    external_id=config.id,
+                    name=config.name,
+                    rtsp_url=config.url
+                )
+                session.add(camera)
+                session.commit()
+                session.refresh(camera)
+            
+            return camera
+    
+    def get_camera_by_external_id(self, external_id: int) -> Optional[Camera]:
+        """Get camera by external ID"""
+        with self.get_session() as session:
+            return session.query(Camera).filter(
+                Camera.external_id == external_id
+            ).first()
+    
+    # ============ Place Operations ============
+    
+    def save_place(self, camera_id: int, name: str, roi_coordinates: list) -> Place:
         """Save a new place/zone"""
         with self.get_session() as session:
-            place = Place(name=name, roi_coordinates=roi_coordinates)
+            place = Place(
+                camera_id=camera_id,
+                name=name, 
+                roi_coordinates=roi_coordinates
+            )
             session.add(place)
             session.commit()
             session.refresh(place)
             return place
     
-    def get_all_places(self) -> list:
-        """Get all places"""
+    def get_places_for_camera(self, camera_id: int) -> List[dict]:
+        """Get all places for a specific camera"""
         with self.get_session() as session:
-            places = session.query(Place).all()
-            # Detach from session
+            places = session.query(Place).filter(
+                Place.camera_id == camera_id
+            ).all()
             return [
                 {
                     "id": p.id,
+                    "camera_id": p.camera_id,
+                    "name": p.name,
+                    "roi_coordinates": p.roi_coordinates,
+                    "status": p.status
+                }
+                for p in places
+            ]
+    
+    def get_all_places(self) -> List[dict]:
+        """Get all places"""
+        with self.get_session() as session:
+            places = session.query(Place).all()
+            return [
+                {
+                    "id": p.id,
+                    "camera_id": p.camera_id,
                     "name": p.name,
                     "roi_coordinates": p.roi_coordinates,
                     "status": p.status
@@ -71,9 +130,20 @@ class Database:
                 return True
             return False
     
-    def save_session(self, place_id: int, start_time, end_time, duration_seconds: float) -> Session:
+    def delete_places_for_camera(self, camera_id: int) -> int:
+        """Delete all places for a camera, returns count deleted"""
+        with self.get_session() as session:
+            count = session.query(Place).filter(
+                Place.camera_id == camera_id
+            ).delete()
+            session.commit()
+            return count
+    
+    # ============ Session Operations ============
+    
+    def save_session(self, place_id: int, start_time: datetime, 
+                     end_time: datetime, duration_seconds: float) -> Session:
         """Save a work session"""
-        from datetime import date
         with self.get_session() as session:
             work_session = Session(
                 place_id=place_id,
@@ -87,12 +157,33 @@ class Database:
             session.refresh(work_session)
             return work_session
     
-    def get_sessions_for_date(self, target_date) -> list:
+    def get_sessions_for_date(self, target_date: date) -> List[dict]:
         """Get all sessions for a specific date"""
         with self.get_session() as session:
             sessions = session.query(Session).filter(
                 Session.session_date == target_date
             ).all()
+            return [
+                {
+                    "id": s.id,
+                    "place_id": s.place_id,
+                    "start_time": s.start_time,
+                    "end_time": s.end_time,
+                    "duration_seconds": s.duration_seconds
+                }
+                for s in sessions
+            ]
+    
+    def get_sessions_for_camera(self, camera_id: int, target_date: date = None) -> List[dict]:
+        """Get sessions for all places of a camera"""
+        with self.get_session() as session:
+            query = session.query(Session).join(Place).filter(
+                Place.camera_id == camera_id
+            )
+            if target_date:
+                query = query.filter(Session.session_date == target_date)
+            
+            sessions = query.all()
             return [
                 {
                     "id": s.id,

@@ -1,59 +1,66 @@
 """
-Video stream handler for webcam and RTSP sources
+Video stream handler for RTSP cameras
+Supports multiple cameras
 """
 import cv2
 import sys
+import time
 from pathlib import Path
+from typing import Optional
+from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import (
-    CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, 
-    CAMERA_FPS, RTSP_URL
-)
+from config import CameraConfig, FRAME_WIDTH, FRAME_HEIGHT
 
 
 class StreamHandler:
-    """Handles video capture from webcam or RTSP stream"""
+    """Handles video capture from RTSP stream"""
     
-    def __init__(self, source=None):
+    def __init__(self, camera_config: CameraConfig):
         """
-        Initialize stream handler
+        Initialize stream handler for a specific camera
         
         Args:
-            source: Camera index (int) or RTSP URL (str). 
-                    If None, uses config defaults.
+            camera_config: CameraConfig with id, name, url
         """
-        if source is None:
-            source = RTSP_URL if RTSP_URL else CAMERA_INDEX
-        
-        self.source = source
-        self.cap = None
+        self.config = camera_config
+        self.cap: Optional[cv2.VideoCapture] = None
         self.is_running = False
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 5
+        self.reconnect_delay = 5  # seconds
+    
+    @property
+    def camera_id(self) -> int:
+        return self.config.id
+    
+    @property
+    def camera_name(self) -> str:
+        return self.config.name
     
     def start(self) -> bool:
         """Start video capture"""
-        print(f"📹 Connecting to video source: {self.source}")
+        print(f"📹 [{self.camera_name}] Connecting to RTSP stream...")
         
-        self.cap = cv2.VideoCapture(self.source)
+        # OpenCV RTSP options for better stability
+        self.cap = cv2.VideoCapture(self.config.url, cv2.CAP_FFMPEG)
         
         if not self.cap.isOpened():
-            print(f"❌ Failed to open video source: {self.source}")
+            print(f"❌ [{self.camera_name}] Failed to connect to camera")
             return False
         
-        # Set resolution for webcam
-        if isinstance(self.source, int):
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-            self.cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
+        # Set buffer size to minimize latency
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
         self.is_running = True
+        self.reconnect_attempts = 0
         
         # Get actual properties
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = int(self.cap.get(cv2.CAP_PROP_FPS))
         
-        print(f"✅ Video capture started: {width}x{height} @ {fps}fps")
+        print(f"✅ [{self.camera_name}] Connected: {width}x{height} @ {fps}fps")
         return True
     
     def read_frame(self):
@@ -69,10 +76,39 @@ class StreamHandler:
         ret, frame = self.cap.read()
         
         if not ret:
-            print("⚠️ Failed to read frame")
-            return False, None
+            print(f"⚠️ [{self.camera_name}] Failed to read frame")
+            
+            # Try to reconnect
+            if self.reconnect_attempts < self.max_reconnect_attempts:
+                self._try_reconnect()
+                return False, None
+            else:
+                print(f"❌ [{self.camera_name}] Max reconnect attempts reached")
+                self.is_running = False
+                return False, None
+        
+        # Reset reconnect counter on successful read
+        self.reconnect_attempts = 0
         
         return True, frame
+    
+    def _try_reconnect(self):
+        """Attempt to reconnect to the stream"""
+        self.reconnect_attempts += 1
+        print(f"🔄 [{self.camera_name}] Reconnecting... Attempt {self.reconnect_attempts}/{self.max_reconnect_attempts}")
+        
+        # Release current capture
+        if self.cap:
+            self.cap.release()
+        
+        time.sleep(self.reconnect_delay)
+        
+        # Try to reconnect
+        self.cap = cv2.VideoCapture(self.config.url, cv2.CAP_FFMPEG)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        if self.cap.isOpened():
+            print(f"✅ [{self.camera_name}] Reconnected successfully")
     
     def get_frame_size(self) -> tuple:
         """Get frame dimensions"""
@@ -89,7 +125,7 @@ class StreamHandler:
         if self.cap:
             self.cap.release()
             self.cap = None
-        print("📹 Video capture stopped")
+        print(f"📹 [{self.camera_name}] Stream stopped")
     
     def __enter__(self):
         self.start()
@@ -97,27 +133,3 @@ class StreamHandler:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
-
-
-if __name__ == "__main__":
-    # Test stream handler
-    print("Testing StreamHandler with webcam...")
-    
-    handler = StreamHandler(0)  # Use default webcam
-    if handler.start():
-        print("Press 'q' to quit")
-        
-        while True:
-            ret, frame = handler.read_frame()
-            if not ret:
-                break
-            
-            cv2.imshow("Stream Test", frame)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        
-        handler.stop()
-        cv2.destroyAllWindows()
-    else:
-        print("Failed to start stream")

@@ -1,6 +1,6 @@
 """
 ROI (Region of Interest) Manager
-Manages workplace zones and checks person presence
+Manages workplace zones for a specific camera
 """
 import cv2
 import numpy as np
@@ -17,6 +17,7 @@ from database.db import db
 class ROI:
     """Region of Interest (workplace zone)"""
     id: int
+    camera_id: int
     name: str
     points: List[Tuple[int, int]]  # Polygon points
     status: str = "VACANT"
@@ -27,14 +28,13 @@ class ROI:
             return False
         
         # Convert points to proper format for cv2.pointPolygonTest
-        # pts must be numpy array with shape (N, 1, 2) or (N, 2)
         pts = np.array(self.points, dtype=np.int32).reshape((-1, 1, 2))
         
         # point must be a tuple of floats
         point_float = (float(point[0]), float(point[1]))
         
         result = cv2.pointPolygonTest(pts, point_float, False)
-        return result >= 0  # >= 0 means inside or on edge
+        return result >= 0
     
     def get_polygon_array(self) -> np.ndarray:
         """Get polygon as numpy array for drawing"""
@@ -42,58 +42,70 @@ class ROI:
 
 
 class ROIManager:
-    """Manages multiple ROI zones"""
+    """Manages ROI zones for a specific camera"""
     
-    def __init__(self):
+    def __init__(self, camera_id: int):
+        """
+        Initialize ROI manager for a specific camera
+        
+        Args:
+            camera_id: Database ID of the camera
+        """
+        self.camera_id = camera_id
         self.rois: Dict[int, ROI] = {}
-        self.next_id = 1
         self._load_from_db()
     
     def _load_from_db(self):
-        """Load ROIs from database"""
+        """Load ROIs from database for this camera"""
         try:
-            places = db.get_all_places()
+            places = db.get_places_for_camera(self.camera_id)
             for place in places:
                 roi = ROI(
                     id=place["id"],
+                    camera_id=place["camera_id"],
                     name=place["name"],
                     points=[tuple(p) for p in place["roi_coordinates"]],
                     status=place.get("status", "VACANT")
                 )
                 self.rois[roi.id] = roi
-                self.next_id = max(self.next_id, roi.id + 1)
             
-            print(f"📍 Loaded {len(self.rois)} ROI zones from database")
+            print(f"📍 Camera {self.camera_id}: Loaded {len(self.rois)} ROI zones")
         except Exception as e:
-            print(f"⚠️ Failed to load ROIs from database: {e}")
+            print(f"⚠️ Camera {self.camera_id}: Failed to load ROIs: {e}")
     
     def add_roi(self, points: List[Tuple[int, int]], name: str = None) -> ROI:
         """
-        Add a new ROI zone
+        Add a new ROI zone for this camera
         
         Args:
             points: List of (x, y) polygon points
             name: Optional name, defaults to "Место N"
-        
-        Returns:
-            Created ROI object
         """
+        place_count = len(self.rois) + 1
         if name is None:
-            name = f"Место {self.next_id}"
+            name = f"Место {place_count}"
         
         # Save to database
         try:
-            place = db.save_place(name=name, roi_coordinates=list(points))
+            place = db.save_place(
+                camera_id=self.camera_id,
+                name=name, 
+                roi_coordinates=list(points)
+            )
             roi_id = place.id
         except Exception as e:
             print(f"⚠️ Failed to save ROI to database: {e}")
-            roi_id = self.next_id
-            self.next_id += 1
+            roi_id = place_count
         
-        roi = ROI(id=roi_id, name=name, points=list(points))
+        roi = ROI(
+            id=roi_id, 
+            camera_id=self.camera_id,
+            name=name, 
+            points=list(points)
+        )
         self.rois[roi_id] = roi
         
-        print(f"✅ Added ROI: {roi.name} with {len(points)} points")
+        print(f"✅ Camera {self.camera_id}: Added ROI '{roi.name}' with {len(points)} points")
         return roi
     
     def delete_roi(self, roi_id: int) -> bool:
@@ -101,9 +113,16 @@ class ROIManager:
         if roi_id in self.rois:
             db.delete_place(roi_id)
             del self.rois[roi_id]
-            print(f"🗑️ Deleted ROI {roi_id}")
+            print(f"🗑️ Camera {self.camera_id}: Deleted ROI {roi_id}")
             return True
         return False
+    
+    def delete_all_rois(self) -> int:
+        """Delete all ROIs for this camera"""
+        count = db.delete_places_for_camera(self.camera_id)
+        self.rois.clear()
+        print(f"🗑️ Camera {self.camera_id}: Deleted {count} ROIs")
+        return count
     
     def get_roi(self, roi_id: int) -> Optional[ROI]:
         """Get ROI by ID"""
@@ -145,14 +164,6 @@ class ROIManager:
                   vacant_color: Tuple[int, int, int] = (0, 255, 0)) -> np.ndarray:
         """
         Draw ROI zones on frame
-        
-        Args:
-            frame: BGR image
-            occupied_color: Color for occupied zones (BGR)
-            vacant_color: Color for vacant zones (BGR)
-        
-        Returns:
-            Frame with drawn ROIs
         """
         overlay = frame.copy()
         
@@ -195,24 +206,3 @@ class ROIManager:
         frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
         
         return frame
-
-
-if __name__ == "__main__":
-    # Test ROI Manager
-    print("Testing ROIManager...")
-    
-    manager = ROIManager()
-    
-    # Add test ROI
-    test_points = [(100, 100), (300, 100), (300, 300), (100, 300)]
-    roi = manager.add_roi(test_points, "Test Zone")
-    
-    # Test contains point
-    print(f"Point (200, 200) in zone: {roi.contains_point((200, 200))}")  # True
-    print(f"Point (400, 400) in zone: {roi.contains_point((400, 400))}")  # False
-    
-    # Test presence check
-    presence = manager.check_presence([(200, 200)])
-    print(f"Presence check: {presence}")
-    
-    print("ROIManager test complete")
