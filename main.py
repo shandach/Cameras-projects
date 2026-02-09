@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config
 from core.stream_handler import StreamHandler
-from core.detector import PersonDetector
+from core.detector import PersonDetector, PoseDetector
 from core.roi_manager import ROIManager
 from core.occupancy_engine import OccupancyEngine
 from gui.roi_editor import ROIEditor, create_mouse_callback
@@ -39,16 +39,18 @@ from database.db import db
 class CameraMonitor:
     """Monitor for a single camera"""
     
-    def __init__(self, camera_config, detector: PersonDetector):
+    def __init__(self, camera_config, detector: PersonDetector, pose_detector: PoseDetector):
         """
         Initialize camera monitor
         
         Args:
             camera_config: CameraConfig from .env
             detector: Shared YOLOv8 detector instance
+            pose_detector: Shared MediaPipe Pose detector (backup)
         """
         self.config = camera_config
         self.detector = detector
+        self.pose_detector = pose_detector  # Резервный детектор
         
         # Get or create camera in database
         self.db_camera = db.get_or_create_camera(camera_config)
@@ -74,9 +76,17 @@ class CameraMonitor:
     
     def process_frame(self, frame):
         """Process a single frame"""
-        # Detect persons
+        # Detect persons with YOLO (primary detector)
         detections = self.detector.detect(frame)
         person_centers = [d.center for d in detections]
+        
+        # If YOLO didn't detect anyone, try MediaPipe Pose (backup)
+        used_backup = False
+        if not person_centers:
+            pose_centers = self.pose_detector.detect(frame)
+            if pose_centers:
+                person_centers = pose_centers
+                used_backup = True
         
         # Check presence in ROIs
         presence = self.roi_manager.check_presence(person_centers)
@@ -104,7 +114,10 @@ class CameraMonitor:
         roi_timers = {}
         roi_positions = {}
         for roi in self.roi_manager.get_all_rois():
-            timer = self.occupancy_engine.get_zone_time(roi.id)
+            # USE DAILY TOTAL instead of current session
+            timer = self.occupancy_engine.get_total_daily_time(roi.id)
+            # timer = self.occupancy_engine.get_zone_time(roi.id)
+            
             if timer > 0:
                 roi_timers[roi.id] = timer
                 pts = roi.get_polygon_array()
@@ -126,7 +139,10 @@ class CameraMonitor:
         """Get current statistics"""
         rois = self.roi_manager.get_all_rois()
         occupied = sum(1 for r in rois if r.status == "OCCUPIED")
-        total_time = sum(self.occupancy_engine.get_zone_time(r.id) for r in rois)
+        
+        # USE DAILY TOTAL
+        total_time = sum(self.occupancy_engine.get_total_daily_time(r.id) for r in rois)
+        # total_time = sum(self.occupancy_engine.get_zone_time(r.id) for r in rois)
         
         return {
             "Camera": self.config.name,
@@ -157,10 +173,13 @@ class WorkplaceMonitor:
         print("🤖 Loading YOLO detector...")
         self.detector = PersonDetector()
         
+        # Shared backup detector (MediaPipe Pose for when YOLO fails)
+        self.pose_detector = PoseDetector()
+        
         # Create camera monitors
         self.cameras: list[CameraMonitor] = []
         for cam_config in CAMERAS:
-            monitor = CameraMonitor(cam_config, self.detector)
+            monitor = CameraMonitor(cam_config, self.detector, self.pose_detector)
             self.cameras.append(monitor)
             print(f"📹 Camera {cam_config.id}: {cam_config.name}")
         

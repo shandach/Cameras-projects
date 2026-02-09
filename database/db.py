@@ -64,7 +64,22 @@ class Database:
                 session.commit()
                 session.refresh(camera)
             
-            return camera
+            # Extract values before session closes to avoid DetachedInstanceError
+            camera_id = camera.id
+            camera_external_id = camera.external_id
+            camera_name = camera.name
+            camera_rtsp_url = camera.rtsp_url
+        
+        # Return a new detached Camera with extracted values
+        detached_camera = Camera(
+            id=camera_id,
+            external_id=camera_external_id,
+            name=camera_name,
+            rtsp_url=camera_rtsp_url
+        )
+        # Manually set the id since it's normally auto-generated
+        detached_camera.id = camera_id
+        return detached_camera
     
     def get_camera_by_external_id(self, external_id: int) -> Optional[Camera]:
         """Get camera by external ID"""
@@ -194,6 +209,16 @@ class Database:
                 }
                 for s in sessions
             ]
+            
+    def get_total_time_for_day(self, place_id: int, target_date: date) -> float:
+        """Get total duration for a place on a specific date"""
+        from sqlalchemy import func
+        with self.get_session() as session:
+            total = session.query(func.sum(Session.duration_seconds)).filter(
+                Session.place_id == place_id,
+                Session.session_date == target_date
+            ).scalar()
+            return total if total else 0.0
 
 
 # Global database instance

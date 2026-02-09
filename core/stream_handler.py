@@ -40,10 +40,17 @@ class StreamHandler:
     
     def start(self) -> bool:
         """Start video capture"""
-        print(f"📹 [{self.camera_name}] Connecting to RTSP stream...")
+        url = self.config.url
         
-        # OpenCV RTSP options for better stability
-        self.cap = cv2.VideoCapture(self.config.url, cv2.CAP_FFMPEG)
+        # Check if URL is a webcam index (0, 1, 2, etc.)
+        if url.isdigit():
+            source = int(url)
+            print(f"📹 [{self.camera_name}] Connecting to webcam {source}...")
+            self.cap = cv2.VideoCapture(source)
+        else:
+            print(f"📹 [{self.camera_name}] Connecting to RTSP stream...")
+            # OpenCV RTSP options for better stability
+            self.cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         
         if not self.cap.isOpened():
             print(f"❌ [{self.camera_name}] Failed to connect to camera")
@@ -104,7 +111,11 @@ class StreamHandler:
         time.sleep(self.reconnect_delay)
         
         # Try to reconnect
-        self.cap = cv2.VideoCapture(self.config.url, cv2.CAP_FFMPEG)
+        url = self.config.url
+        if url.isdigit():
+            self.cap = cv2.VideoCapture(int(url))
+        else:
+            self.cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         
         if self.cap.isOpened():

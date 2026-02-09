@@ -15,7 +15,7 @@ from pathlib import Path
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Callable
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import ENTRY_THRESHOLD, EXIT_THRESHOLD
@@ -111,12 +111,13 @@ class OccupancyEngine:
                 # Check if person stayed long enough
                 elapsed = current_time - tracker.entry_start_time
                 if elapsed >= ENTRY_THRESHOLD:
-                    # Confirmed entry - start timer
+                    # Confirmed entry - start timer FROM ENTRY TIME (include 3 sec check)
                     tracker.state = ZoneState.OCCUPIED
-                    tracker.timer_start_time = current_time
+                    # Timer starts from when person first entered, not from confirmation
+                    tracker.timer_start_time = tracker.entry_start_time
                     tracker.accumulated_time = 0.0
-                    tracker.session_start = datetime.now()
-                    print(f"✅ Zone {zone_id}: Entry confirmed, timer started")
+                    tracker.session_start = datetime.now() - timedelta(seconds=ENTRY_THRESHOLD)
+                    print(f"✅ Zone {zone_id}: Entry confirmed, timer includes {ENTRY_THRESHOLD:.0f}s check time")
             else:
                 # Person left before confirmation
                 tracker.state = ZoneState.VACANT
@@ -185,9 +186,19 @@ class OccupancyEngine:
         return tracker.get_display_status()
     
     def get_zone_time(self, zone_id: int) -> float:
-        """Get elapsed time for zone"""
+        """Get elapsed time for current session only"""
         tracker = self.get_or_create_tracker(zone_id)
         return tracker.get_elapsed_time()
+        
+    def get_total_daily_time(self, zone_id: int) -> float:
+        """Get total accumulated time for today (historical + current session)"""
+        # Get historical total from DB
+        historical_total = db.get_total_time_for_day(zone_id, date.today())
+        
+        # Add current session time
+        current_session = self.get_zone_time(zone_id)
+        
+        return historical_total + current_session
     
     def get_all_timers(self) -> Dict[int, float]:
         """Get all zone timers"""

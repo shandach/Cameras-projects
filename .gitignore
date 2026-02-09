@@ -29,5 +29,8 @@ Thumbs.db
 # YOLO models (downloaded automatically)
 *.pt
 
+# MediaPipe models (downloaded automatically)
+*.task
+
 # Logs
 *.log
