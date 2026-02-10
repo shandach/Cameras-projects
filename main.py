@@ -23,16 +23,17 @@ Controls:
 import cv2
 import sys
 from pathlib import Path
+from datetime import date
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config
 from core.stream_handler import StreamHandler
-from core.detector import PersonDetector, PoseDetector
+from core.detector import PersonDetector, PoseDetector, TrackingDetector
 from core.roi_manager import ROIManager
 from core.occupancy_engine import OccupancyEngine
 from gui.roi_editor import ROIEditor, create_mouse_callback
-from gui.display import draw_timer_overlay, draw_stats_panel, draw_help_panel, format_duration
+from gui.display import draw_timer_overlay, draw_stats_panel, draw_help_panel, format_duration, draw_employee_stats_overlay
 from database.db import db
 
 
@@ -110,24 +111,46 @@ class CameraMonitor:
         # Draw person detections
         frame = self.detector.draw_detections(frame, detections)
         
-        # Draw timers
-        roi_timers = {}
+        # Draw employee stats overlay
+        roi_stats = {}
         roi_positions = {}
-        for roi in self.roi_manager.get_all_rois():
-            # USE DAILY TOTAL instead of current session
-            timer = self.occupancy_engine.get_total_daily_time(roi.id)
-            # timer = self.occupancy_engine.get_zone_time(roi.id)
-            
-            if timer > 0:
-                roi_timers[roi.id] = timer
-                pts = roi.get_polygon_array()
-                M = cv2.moments(pts)
-                if M["m00"] != 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"]) + 35
-                    roi_positions[roi.id] = (cx - 40, cy)
+        today = date.today()
         
-        frame = draw_timer_overlay(frame, roi_timers, roi_positions)
+        for roi in self.roi_manager.get_all_rois():
+            # Skip client zones - they have their own visual indicator
+            if roi.zone_type == "client":
+                continue
+                
+            # Get ROI center position
+            pts = roi.get_polygon_array()
+            M = cv2.moments(pts)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                roi_positions[roi.id] = (cx, cy)
+            
+            # Get employee info
+            employee = db.get_employee_by_place(roi.id)
+            employee_name = employee['name'] if employee else f"Место {roi.id}"
+            employee_id = employee['id'] if employee else None
+            
+            # Get work time (daily total)
+            work_time = self.occupancy_engine.get_total_daily_time(roi.id)
+            
+            # Get client stats
+            if employee_id:
+                client_stats = db.get_client_stats_for_employee(employee_id, today)
+            else:
+                client_stats = db.get_client_stats_for_place(roi.id, today)
+            
+            roi_stats[roi.id] = {
+                'employee_name': employee_name,
+                'work_time': work_time,
+                'client_count': client_stats['client_count'],
+                'client_service_time': client_stats['total_service_time']
+            }
+        
+        frame = draw_employee_stats_overlay(frame, roi_stats, roi_positions)
         
         # Draw ROI editor overlay if drawing
         if self.roi_editor.is_drawing:
@@ -173,8 +196,15 @@ class WorkplaceMonitor:
         print("🤖 Loading YOLO detector...")
         self.detector = PersonDetector()
         
+        # Tracking detector for client zones (ByteTrack)
+        print("🎯 Loading ByteTrack tracker...")
+        self.tracking_detector = TrackingDetector()
+        
         # Shared backup detector (MediaPipe Pose for when YOLO fails)
         self.pose_detector = PoseDetector()
+        
+        # Client tracking state: {(camera_id, roi_id): {track_id: {'enter_time': datetime, 'last_seen': datetime}}}
+        self.client_tracking = {}
         
         # Create camera monitors
         self.cameras: list[CameraMonitor] = []
@@ -198,9 +228,18 @@ class WorkplaceMonitor:
     
     def run(self):
         """Main application loop"""
-        # Connect to first camera
-        if not self.current_camera.connect():
-            print("❌ Failed to connect to camera")
+        # Connect to ALL cameras
+        connected_count = 0
+        print("🔌 Connecting to all cameras...")
+        for camera in self.cameras:
+            if camera.connect():
+                print(f"✅ Connected to {camera.config.name}")
+                connected_count += 1
+            else:
+                print(f"❌ Failed to connect to {camera.config.name}")
+        
+        if connected_count == 0:
+            print("❌ No cameras connected. Exiting.")
             return
         
         # Create window
@@ -215,36 +254,55 @@ class WorkplaceMonitor:
         
         try:
             while self.running:
-                camera = self.current_camera
+                display_frame = None
                 
-                # Read frame
-                ret, frame = camera.stream.read_frame()
-                if not ret:
-                    # Show reconnecting message
-                    frame = self._create_error_frame("Reconnecting...")
-                else:
-                    # Process frame
-                    frame, person_count = camera.process_frame(frame)
+                # Process ALL cameras
+                for i, camera in enumerate(self.cameras):
+                    if not camera.is_connected:
+                        continue
+                        
+                    # Read frame
+                    ret, frame = camera.stream.read_frame()
+                    if not ret:
+                        if i == self.current_camera_idx:
+                            display_frame = self._create_error_frame(f"Connection lost: {camera.config.name}")
+                        continue
                     
-                    # Draw person count
-                    cv2.putText(
-                        frame, f"Persons: {person_count}", (10, frame.shape[0] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
-                    )
-                
-                # Draw camera info
-                self._draw_camera_info(frame)
-                
-                # Draw UI panels
-                if self.show_stats:
-                    stats = camera.get_stats()
-                    frame = draw_stats_panel(frame, stats)
-                
-                if self.show_help:
-                    frame = draw_help_panel(frame)
-                
-                # Display
-                cv2.imshow(self.window_name, frame)
+                    # Process frame (employee zones detection)
+                    # Note: Running YOLO for every camera every frame might be heavy
+                    processed_frame, person_count = camera.process_frame(frame)
+                    
+                    # Process client zones with ByteTrack
+                    processed_frame = self._process_client_zones(processed_frame, camera)
+                    
+                    # If this is the current camera, prepare for display
+                    if i == self.current_camera_idx:
+                        display_frame = processed_frame.copy()
+                        
+                        # Draw person count on display frame
+                        cv2.putText(
+                            display_frame, f"Persons: {person_count}", (10, display_frame.shape[0] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
+                        )
+                        
+                        # Draw camera info
+                        self._draw_camera_info(display_frame)
+                        
+                        # Draw UI panels
+                        if self.show_stats:
+                            stats = camera.get_stats()
+                            display_frame = draw_stats_panel(display_frame, stats)
+                        
+                        if self.show_help:
+                            display_frame = draw_help_panel(display_frame)
+                        
+                        # Draw ROI editor overlay if drawing
+                        if self.roi_editor.is_drawing:
+                            display_frame = self.roi_editor.draw_current(display_frame)
+
+                # Display current camera frame
+                if display_frame is not None:
+                    cv2.imshow(self.window_name, display_frame)
                 
                 # Handle keyboard
                 self._handle_keyboard()
@@ -279,9 +337,128 @@ class WorkplaceMonitor:
             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
         )
     
+    def _process_client_zones(self, frame, camera: CameraMonitor):
+        """Process client zones with ByteTrack tracking - single client per zone"""
+        from datetime import datetime
+        from config import CLIENT_ENTRY_THRESHOLD
+        from gui.display import format_duration
+        
+        # Get client zones
+        client_zones = [roi for roi in camera.roi_manager.get_all_rois() 
+                       if roi.zone_type == "client"]
+        
+        if not client_zones:
+            return frame
+        
+        # Run tracking detection
+        detections = self.tracking_detector.detect(frame)
+        
+        now = datetime.now()
+        camera_id = camera.camera_db_id
+        
+        for roi in client_zones:
+            zone_key = (camera_id, roi.id)
+            
+            # Initialize zone state: {'active_client': track_id or None, 'clients': {track_id: data}}
+            if zone_key not in self.client_tracking:
+                self.client_tracking[zone_key] = {
+                    'active_client': None,  # Currently tracked client
+                    'clients': {}  # All clients in zone with their data
+                }
+            
+            zone_state = self.client_tracking[zone_key]
+            
+            # Find all clients currently in this zone with their centers
+            clients_in_zone = []
+            for det in detections:
+                if roi.contains_point(det.center):
+                    clients_in_zone.append({
+                        'track_id': det.track_id,
+                        'center': det.center
+                    })
+                    
+                    # Update or add client data
+                    if det.track_id not in zone_state['clients']:
+                        zone_state['clients'][det.track_id] = {
+                            'enter_time': now,
+                            'last_seen': now
+                        }
+                    else:
+                        zone_state['clients'][det.track_id]['last_seen'] = now
+            
+            current_track_ids = [c['track_id'] for c in clients_in_zone]
+            
+            # Check if active client left
+            if zone_state['active_client'] is not None:
+                if zone_state['active_client'] not in current_track_ids:
+                    # Active client left - save if >60s
+                    track_id = zone_state['active_client']
+                    if track_id in zone_state['clients']:
+                        track_data = zone_state['clients'][track_id]
+                        duration = (track_data['last_seen'] - track_data['enter_time']).total_seconds()
+                        
+                        if duration >= CLIENT_ENTRY_THRESHOLD:
+                            employee_id = roi.linked_employee_id
+                            if employee_id:
+                                db.save_client_visit(
+                                    place_id=roi.id,
+                                    employee_id=employee_id,
+                                    track_id=track_id,
+                                    enter_time=track_data['enter_time'],
+                                    exit_time=track_data['last_seen'],
+                                    duration_seconds=duration
+                                )
+                                service_time = duration - CLIENT_ENTRY_THRESHOLD
+                                print(f"✅ Client #{track_id} → emp#{employee_id}: обслуживание {int(service_time)}s")
+                        
+                        del zone_state['clients'][track_id]
+                    
+                    zone_state['active_client'] = None
+            
+            # Remove other clients that left (not active)
+            tracks_to_remove = [tid for tid in zone_state['clients'] 
+                               if tid not in current_track_ids and tid != zone_state['active_client']]
+            for tid in tracks_to_remove:
+                del zone_state['clients'][tid]
+            
+            # If no active client, pick the first one in zone
+            if zone_state['active_client'] is None and clients_in_zone:
+                # Pick first client (by track_id as proxy for arrival order)
+                first_client = min(clients_in_zone, key=lambda c: c['track_id'])
+                zone_state['active_client'] = first_client['track_id']
+            
+            # Draw timer for active client (only after 60s verification)
+            if zone_state['active_client'] is not None:
+                track_id = zone_state['active_client']
+                track_data = zone_state['clients'].get(track_id)
+                
+                if track_data:
+                    elapsed = (now - track_data['enter_time']).total_seconds()
+                    
+                    pts = roi.get_polygon_array()
+                    M = cv2.moments(pts)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"]) + 50
+                        
+                        if elapsed >= CLIENT_ENTRY_THRESHOLD:
+                            # Show timer starting from 00:01:00
+                            display_time = elapsed  # Total time including verification
+                            time_str = format_duration(display_time)
+                            cv2.putText(
+                                frame, time_str, (cx - 40, cy),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2
+                            )
+                        # During verification (0-60s) - show nothing
+        
+        # Draw tracking detections on frame
+        frame = self.tracking_detector.draw_detections(frame, detections)
+        
+        return frame
+    
     def _switch_camera(self, delta: int):
-        """Switch to another camera"""
-        self.current_camera.disconnect()
+        """Switch to another camera (view only)"""
+        # No disconnect needed - all cameras keep running
         
         self.current_camera_idx = (self.current_camera_idx + delta) % len(self.cameras)
         
@@ -291,8 +468,7 @@ class WorkplaceMonitor:
             create_mouse_callback(self.current_camera.roi_editor)
         )
         
-        self.current_camera.connect()
-        print(f"📹 Switched to: {self.current_camera.config.name}")
+        print(f"👀 Viewing: {self.current_camera.config.name}")
     
     def _handle_keyboard(self):
         """Handle keyboard input"""
@@ -303,17 +479,44 @@ class WorkplaceMonitor:
             self.running = False
         
         elif key == ord('r') or key == ord('R'):
+            # Start drawing - will ask for zone type when finished
             camera.roi_editor.start_drawing()
+            print("🔲 Drawing ROI... Press ENTER when done, then E=employee or C=client")
         
         elif key == 13:  # Enter
             if camera.roi_editor.is_drawing:
                 points = camera.roi_editor.finish_roi()
                 if points:
-                    camera.roi_manager.add_roi(points)
+                    # Store points temporarily, wait for zone type selection
+                    self._pending_roi_points = points
+                    self._waiting_zone_type = True
+                    print("📋 ROI saved. Press: E=employee zone, C=client zone")
+        
+        elif key == ord('e') or key == ord('E'):
+            # Employee zone
+            if hasattr(self, '_waiting_zone_type') and self._waiting_zone_type:
+                self._save_roi_with_type("employee")
+            else:
+                print("ℹ️ Draw ROI first (R), then press E for employee zone")
+        
+        elif key >= ord('0') and key <= ord('9'):
+            # Select employee for client zone linking (1-9 = employees 1-9, 0 = employee 10)
+            if hasattr(self, '_waiting_employee_link') and self._waiting_employee_link:
+                digit = int(chr(key))
+                employee_idx = 9 if digit == 0 else digit - 1  # 0 means 10th, 1-9 means 1st-9th
+                employees = db.get_all_employees()
+                if employee_idx < len(employees):
+                    self._link_and_save_client_zone(employees[employee_idx]['id'])
+                else:
+                    print(f"❌ Сотрудник #{employee_idx + 1} не найден")
         
         elif key == 27:  # Escape
             if camera.roi_editor.is_drawing:
                 camera.roi_editor.cancel_drawing()
+            if hasattr(self, '_waiting_zone_type'):
+                self._waiting_zone_type = False
+                self._pending_roi_points = None
+                print("❌ ROI cancelled")
         
         elif key == ord('d') or key == ord('D'):
             rois = camera.roi_manager.get_all_rois()
@@ -321,8 +524,23 @@ class WorkplaceMonitor:
                 camera.roi_manager.delete_roi(rois[-1].id)
         
         elif key == ord('c') or key == ord('C'):
-            # Clear all ROIs for current camera
-            camera.roi_manager.delete_all_rois()
+            # Check if waiting for zone type
+            if hasattr(self, '_waiting_zone_type') and self._waiting_zone_type:
+                # Client zone - need to link to employee
+                employees = db.get_all_employees()
+                if employees:
+                    print("👤 Выберите сотрудника (1-9, 0=10):")
+                    for i, emp in enumerate(employees[:10]):
+                        key_hint = 0 if i == 9 else i + 1  # 1-9 for first 9, 0 for 10th
+                        print(f"   {key_hint}: {emp['name']}")
+                    self._waiting_employee_link = True
+                    self._waiting_zone_type = False  # Important: switch state to prevent conflicts
+                else:
+                    print("⚠️ Сотрудники не найдены в БД. Создаём зону без привязки.")
+                    self._save_roi_with_type("client", linked_employee_id=None)
+            else:
+                # Clear all ROIs for current camera
+                camera.roi_manager.delete_all_rois()
         
         elif key == ord('s') or key == ord('S'):
             self.show_stats = not self.show_stats
@@ -339,6 +557,25 @@ class WorkplaceMonitor:
             # Previous camera
             if len(self.cameras) > 1:
                 self._switch_camera(-1)
+    
+    def _save_roi_with_type(self, zone_type: str, linked_employee_id: int = None):
+        """Save ROI with specified zone type"""
+        camera = self.current_camera
+        if hasattr(self, '_pending_roi_points') and self._pending_roi_points:
+            camera.roi_manager.add_roi(
+                self._pending_roi_points, 
+                zone_type=zone_type,
+                linked_employee_id=linked_employee_id
+            )
+            self._pending_roi_points = None
+            self._waiting_zone_type = False
+            print(f"✅ ROI saved as {zone_type} zone")
+    
+    def _link_and_save_client_zone(self, employee_id: int):
+        """Save client zone linked to employee"""
+        self._save_roi_with_type("client", linked_employee_id=employee_id)
+        self._waiting_employee_link = False
+        print(f"✅ Client zone linked to employee ID {employee_id}")
 
 
 def main():

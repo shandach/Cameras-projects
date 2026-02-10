@@ -38,7 +38,8 @@ class Employee(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
-    places = relationship("Place", back_populates="employee")
+    places = relationship("Place", back_populates="employee", foreign_keys="[Place.employee_id]")
+    client_visits = relationship("ClientVisit", back_populates="employee")
     
     def __repr__(self):
         return f"<Employee(id={self.id}, name='{self.name}')>"
@@ -50,8 +51,10 @@ class Place(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     camera_id = Column(Integer, ForeignKey("cameras.id"), nullable=False)
-    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)  # Привязка к сотруднику
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)  # Сотрудник в этой зоне
+    linked_employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)  # Для client зон: какому сотруднику приписывать клиентов
     name = Column(String(100), nullable=False)  # e.g., "Место 1"
+    zone_type = Column(String(20), default="employee")  # "employee" или "client"
     roi_coordinates = Column(JSON, nullable=False)  # List of [x, y] points
     status = Column(String(20), default="VACANT")  # VACANT, OCCUPIED
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -59,15 +62,17 @@ class Place(Base):
     
     # Relationships
     camera = relationship("Camera", back_populates="places")
-    employee = relationship("Employee", back_populates="places")
+    employee = relationship("Employee", back_populates="places", foreign_keys=[employee_id])
+    linked_employee = relationship("Employee", foreign_keys=[linked_employee_id])  # No back_populates
     sessions = relationship("Session", back_populates="place")
+    client_visits = relationship("ClientVisit", back_populates="place")
     
     def __repr__(self):
-        return f"<Place(id={self.id}, name='{self.name}', camera_id={self.camera_id})>"
+        return f"<Place(id={self.id}, name='{self.name}', zone_type='{self.zone_type}')>"
 
 
 class Session(Base):
-    """Work session record"""
+    """Work session record (for employees)"""
     __tablename__ = "sessions"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -83,3 +88,26 @@ class Session(Base):
     
     def __repr__(self):
         return f"<Session(id={self.id}, place_id={self.place_id}, duration={self.duration_seconds}s)>"
+
+
+class ClientVisit(Base):
+    """Client visit record (for client zones with ByteTrack)"""
+    __tablename__ = "client_visits"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    place_id = Column(Integer, ForeignKey("places.id"), nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)  # Сотрудник, который обслужил
+    track_id = Column(Integer, nullable=False)  # ByteTrack ID
+    visit_date = Column(Date, default=date.today)
+    enter_time = Column(DateTime, nullable=False)
+    exit_time = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    place = relationship("Place", back_populates="client_visits")
+    employee = relationship("Employee", back_populates="client_visits")
+    
+    def __repr__(self):
+        return f"<ClientVisit(id={self.id}, employee_id={self.employee_id}, track_id={self.track_id}, duration={self.duration_seconds}s)>"
+

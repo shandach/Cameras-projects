@@ -21,6 +21,9 @@ class ROI:
     name: str
     points: List[Tuple[int, int]]  # Polygon points
     status: str = "VACANT"
+    zone_type: str = "employee"  # "employee" or "client"
+    employee_id: int = None  # For employee zones
+    linked_employee_id: int = None  # For client zones: which employee gets credit
     
     def contains_point(self, point: Tuple[int, int]) -> bool:
         """Check if a point is inside the polygon"""
@@ -65,7 +68,10 @@ class ROIManager:
                     camera_id=place["camera_id"],
                     name=place["name"],
                     points=[tuple(p) for p in place["roi_coordinates"]],
-                    status=place.get("status", "VACANT")
+                    status=place.get("status", "VACANT"),
+                    zone_type=place.get("zone_type", "employee"),
+                    employee_id=place.get("employee_id"),
+                    linked_employee_id=place.get("linked_employee_id")
                 )
                 self.rois[roi.id] = roi
             
@@ -73,24 +79,32 @@ class ROIManager:
         except Exception as e:
             print(f"⚠️ Camera {self.camera_id}: Failed to load ROIs: {e}")
     
-    def add_roi(self, points: List[Tuple[int, int]], name: str = None) -> ROI:
+    def add_roi(self, points: List[Tuple[int, int]], name: str = None, 
+                zone_type: str = "employee", linked_employee_id: int = None) -> ROI:
         """
         Add a new ROI zone for this camera
         
         Args:
             points: List of (x, y) polygon points
-            name: Optional name, defaults to "Место N"
+            name: Optional name, defaults to "Место N" or "Клиент N"
+            zone_type: "employee" or "client"
+            linked_employee_id: For client zones, which employee gets credit
         """
         place_count = len(self.rois) + 1
         if name is None:
-            name = f"Место {place_count}"
+            if zone_type == "client":
+                name = f"Клиент {place_count}"
+            else:
+                name = f"Место {place_count}"
         
         # Save to database
         try:
             place = db.save_place(
                 camera_id=self.camera_id,
                 name=name, 
-                roi_coordinates=list(points)
+                roi_coordinates=list(points),
+                zone_type=zone_type,
+                linked_employee_id=linked_employee_id
             )
             roi_id = place.id
         except Exception as e:
@@ -101,11 +115,14 @@ class ROIManager:
             id=roi_id, 
             camera_id=self.camera_id,
             name=name, 
-            points=list(points)
+            points=list(points),
+            zone_type=zone_type,
+            linked_employee_id=linked_employee_id
         )
         self.rois[roi_id] = roi
         
-        print(f"✅ Camera {self.camera_id}: Added ROI '{roi.name}' with {len(points)} points")
+        zone_label = "employee" if zone_type == "employee" else f"client→emp#{linked_employee_id}"
+        print(f"✅ Camera {self.camera_id}: Added ROI '{roi.name}' ({zone_label}) with {len(points)} points")
         return roi
     
     def delete_roi(self, roi_id: int) -> bool:
@@ -163,18 +180,26 @@ class ROIManager:
                   occupied_color: Tuple[int, int, int] = (0, 0, 255),
                   vacant_color: Tuple[int, int, int] = (0, 255, 0)) -> np.ndarray:
         """
-        Draw ROI zones on frame
+        Draw ROI zones on frame with different colors for employee/client zones
         """
         overlay = frame.copy()
         
         for roi in self.rois.values():
             pts = roi.get_polygon_array()
             
-            # Choose color based on status
-            if roi.status == "OCCUPIED":
-                color = occupied_color
+            # Choose color based on zone_type and status
+            if roi.zone_type == "client":
+                # Client zones: Yellow (occupied) / Cyan (vacant)
+                if roi.status == "OCCUPIED":
+                    color = (0, 255, 255)  # Yellow
+                else:
+                    color = (255, 255, 0)  # Cyan
             else:
-                color = vacant_color
+                # Employee zones: Red (occupied) / Green (vacant)
+                if roi.status == "OCCUPIED":
+                    color = occupied_color  # Red
+                else:
+                    color = vacant_color  # Green
             
             # Draw filled polygon with transparency
             cv2.fillPoly(overlay, [pts], color)
@@ -190,16 +215,20 @@ class ROIManager:
             else:
                 cx, cy = pts[0][0], pts[0][1]
             
-            # Draw name and status
-            label = f"{roi.name}"
+            # Draw name with zone type indicator
+            zone_prefix = "👥" if roi.zone_type == "client" else "👤"
+            label = f"{zone_prefix} {roi.name}"
             cv2.putText(
-                frame, label, (cx - 40, cy - 10),
+                frame, label, (cx - 50, cy - 10),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
             )
-            cv2.putText(
-                frame, roi.status, (cx - 40, cy + 15),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2
-            )
+            
+            # Draw status for employee zones only
+            if roi.zone_type == "employee":
+                cv2.putText(
+                    frame, roi.status, (cx - 40, cy + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2
+                )
         
         # Blend overlay
         alpha = 0.3

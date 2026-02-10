@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session as DBSession
-from database.models import Base, Camera, Place, Session
+from database.models import Base, Camera, Place, Session, Employee, ClientVisit
 from config import DATABASE_PATH, DATABASE_DIR, CameraConfig
 
 
@@ -90,13 +90,16 @@ class Database:
     
     # ============ Place Operations ============
     
-    def save_place(self, camera_id: int, name: str, roi_coordinates: list) -> Place:
+    def save_place(self, camera_id: int, name: str, roi_coordinates: list,
+                   zone_type: str = "employee", linked_employee_id: int = None) -> Place:
         """Save a new place/zone"""
         with self.get_session() as session:
             place = Place(
                 camera_id=camera_id,
                 name=name, 
-                roi_coordinates=roi_coordinates
+                roi_coordinates=roi_coordinates,
+                zone_type=zone_type,
+                linked_employee_id=linked_employee_id
             )
             session.add(place)
             session.commit()
@@ -115,7 +118,10 @@ class Database:
                     "camera_id": p.camera_id,
                     "name": p.name,
                     "roi_coordinates": p.roi_coordinates,
-                    "status": p.status
+                    "status": p.status,
+                    "zone_type": p.zone_type,
+                    "employee_id": p.employee_id,
+                    "linked_employee_id": p.linked_employee_id
                 }
                 for p in places
             ]
@@ -219,7 +225,115 @@ class Database:
                 Session.session_date == target_date
             ).scalar()
             return total if total else 0.0
+    
+    # ============ Employee Operations ============
+    
+    def get_employee_by_place(self, place_id: int) -> Optional[dict]:
+        """Get employee assigned to a place/zone"""
+        with self.get_session() as session:
+            place = session.query(Place).filter(Place.id == place_id).first()
+            if place and place.employee_id:
+                employee = session.query(Employee).filter(
+                    Employee.id == place.employee_id
+                ).first()
+                if employee:
+                    return {
+                        'id': employee.id,
+                        'name': employee.name,
+                        'position': employee.position
+                    }
+            return None
+    
+    def get_all_employees(self) -> List[dict]:
+        """Get all active employees"""
+        with self.get_session() as session:
+            employees = session.query(Employee).filter(
+                Employee.is_active == 1
+            ).all()
+            return [
+                {'id': e.id, 'name': e.name, 'position': e.position}
+                for e in employees
+            ]
+    
+    def create_employee(self, name: str, position: str = None) -> int:
+        """Create a new employee, return ID"""
+        with self.get_session() as session:
+            employee = Employee(name=name, position=position)
+            session.add(employee)
+            session.commit()
+            return employee.id
+    
+    def assign_employee_to_place(self, place_id: int, employee_id: int):
+        """Assign an employee to a place/zone"""
+        with self.get_session() as session:
+            place = session.query(Place).filter(Place.id == place_id).first()
+            if place:
+                place.employee_id = employee_id
+                session.commit()
+    
+    # ============ Client Visit Operations ============
+    
+    def save_client_visit(self, place_id: int, employee_id: int, track_id: int,
+                          enter_time: datetime, exit_time: datetime, 
+                          duration_seconds: float) -> int:
+        """Save a completed client visit"""
+        with self.get_session() as session:
+            visit = ClientVisit(
+                place_id=place_id,
+                employee_id=employee_id,
+                track_id=track_id,
+                visit_date=enter_time.date(),
+                enter_time=enter_time,
+                exit_time=exit_time,
+                duration_seconds=duration_seconds
+            )
+            session.add(visit)
+            session.commit()
+            return visit.id
+    
+    def get_client_stats_for_employee(self, employee_id: int, target_date: date) -> dict:
+        """Get client statistics for an employee on a specific date"""
+        from sqlalchemy import func
+        with self.get_session() as session:
+            # Count clients
+            client_count = session.query(func.count(ClientVisit.id)).filter(
+                ClientVisit.employee_id == employee_id,
+                ClientVisit.visit_date == target_date
+            ).scalar() or 0
+            
+            # Total service time
+            total_time = session.query(func.sum(ClientVisit.duration_seconds)).filter(
+                ClientVisit.employee_id == employee_id,
+                ClientVisit.visit_date == target_date
+            ).scalar() or 0.0
+            
+            return {
+                'client_count': client_count,
+                'total_service_time': total_time
+            }
+    
+    def get_client_stats_for_place(self, place_id: int, target_date: date) -> dict:
+        """Get client statistics for a place on a specific date"""
+        from sqlalchemy import func
+        with self.get_session() as session:
+            # Count clients
+            client_count = session.query(func.count(ClientVisit.id)).filter(
+                ClientVisit.place_id == place_id,
+                ClientVisit.visit_date == target_date
+            ).scalar() or 0
+            
+            # Total service time
+            total_time = session.query(func.sum(ClientVisit.duration_seconds)).filter(
+                ClientVisit.place_id == place_id,
+                ClientVisit.visit_date == target_date
+            ).scalar() or 0.0
+            
+            return {
+                'client_count': client_count,
+                'total_service_time': total_time
+            }
 
 
 # Global database instance
 db = Database()
+

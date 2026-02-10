@@ -75,8 +75,17 @@ DETECTION_CONFIDENCE = float(os.getenv("DETECTION_CONFIDENCE", "0.5"))
 PERSON_CLASS_ID = 0  # COCO class 0 = person
 
 # Occupancy Engine settings (in seconds)
-ENTRY_THRESHOLD = float(os.getenv("ENTRY_THRESHOLD", "3.0"))
-EXIT_THRESHOLD = float(os.getenv("EXIT_THRESHOLD", "10.0"))
+# Employee zones
+ENTRY_THRESHOLD = float(os.getenv("ENTRY_THRESHOLD", "3.0"))  # 3 sec check
+EXIT_THRESHOLD = float(os.getenv("EXIT_THRESHOLD", "30.0"))   # 30 sec grace period
+
+# Client zones
+CLIENT_ENTRY_THRESHOLD = float(os.getenv("CLIENT_ENTRY_THRESHOLD", "60.0"))  # 1 min check
+CLIENT_EXIT_THRESHOLD = float(os.getenv("CLIENT_EXIT_THRESHOLD", "10.0"))    # 10 sec grace
+
+# Work hours (Tashkent timezone UZT +5)
+WORK_START = os.getenv("WORK_START", "08:45")  # Start time
+WORK_END = os.getenv("WORK_END", "18:15")      # End time - client IDs reset after this
 
 # Display settings
 WINDOW_NAME = "Workplace Monitoring"

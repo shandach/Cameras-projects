@@ -129,3 +129,94 @@ def draw_help_panel(frame: np.ndarray) -> np.ndarray:
         )
     
     return frame
+
+
+def draw_employee_stats_overlay(frame: np.ndarray, 
+                                roi_stats: Dict[int, dict],
+                                roi_positions: Dict[int, Tuple[int, int]]) -> np.ndarray:
+    """
+    Draw employee statistics overlay for each ROI
+    
+    Args:
+        frame: BGR image
+        roi_stats: Dict mapping ROI ID to stats dict:
+            {
+                'employee_name': str,
+                'work_time': float (seconds),
+                'client_count': int,
+                'client_service_time': float (seconds)
+            }
+        roi_positions: Dict mapping ROI ID to (x, y) position for display
+    
+    Returns:
+        Frame with employee stats overlays
+    """
+    for roi_id, stats in roi_stats.items():
+        if roi_id not in roi_positions:
+            continue
+        
+        x, y = roi_positions[roi_id]
+        
+        # Prepare text lines
+        lines = []
+        
+        # Employee name
+        name = stats.get('employee_name', 'Сотрудник')
+        lines.append(f"{name}")
+        
+        # Work time
+        work_time = stats.get('work_time', 0)
+        lines.append(f"Время: {format_duration(work_time)}")
+        
+        # Client count
+        client_count = stats.get('client_count', 0)
+        lines.append(f"Клиентов: {client_count}")
+        
+        # Client service time
+        service_time = stats.get('client_service_time', 0)
+        lines.append(f"Обслуж: {format_duration(service_time)}")
+        
+        # Calculate panel dimensions
+        line_height = 22
+        panel_height = len(lines) * line_height + 15
+        panel_width = 180
+        
+        # Adjust position to be above the ROI center
+        panel_x = x - panel_width // 2
+        panel_y = y - panel_height - 10
+        
+        # Ensure panel stays on screen
+        panel_x = max(5, min(panel_x, frame.shape[1] - panel_width - 5))
+        panel_y = max(5, panel_y)
+        
+        # Draw semi-transparent background
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay, 
+            (panel_x, panel_y), 
+            (panel_x + panel_width, panel_y + panel_height),
+            (40, 40, 40), -1
+        )
+        frame = cv2.addWeighted(overlay, 0.8, frame, 0.2, 0)
+        
+        # Draw border
+        cv2.rectangle(
+            frame, 
+            (panel_x, panel_y), 
+            (panel_x + panel_width, panel_y + panel_height),
+            (0, 200, 200), 1
+        )
+        
+        # Draw text lines
+        text_y = panel_y + 18
+        for i, line in enumerate(lines):
+            # First line (name) in yellow, others in white
+            color = (0, 255, 255) if i == 0 else (255, 255, 255)
+            cv2.putText(
+                frame, line, (panel_x + 8, text_y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1
+            )
+            text_y += line_height
+    
+    return frame
+
