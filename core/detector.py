@@ -151,11 +151,12 @@ class TrackingDetector:
             List of TrackingDetection objects with track_id
         """
         # Run tracking inference with ByteTrack
+        # custom config to improve persistence
         results = self.model.track(
             frame,
             classes=[PERSON_CLASS_ID],
             conf=self.confidence,
-            tracker="bytetrack.yaml",
+            tracker="bytetrack_custom.yaml",
             persist=True,
             verbose=False
         )

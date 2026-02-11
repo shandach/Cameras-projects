@@ -23,11 +23,13 @@ Controls:
 import cv2
 import sys
 from pathlib import Path
+import time
 from datetime import date
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config
+from config import (CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config,
+                    WORKPLACE_OWNERS, AUTO_CYCLE_INTERVAL, AUTO_CYCLE_PAUSE_DURATION)
 from core.stream_handler import StreamHandler
 from core.detector import PersonDetector, PoseDetector, TrackingDetector
 from core.roi_manager import ROIManager
@@ -67,6 +69,7 @@ class CameraMonitor:
     
     def connect(self) -> bool:
         """Connect to camera stream"""
+        # StreamHandler.start() now launches a thread
         self.is_connected = self.stream.start()
         return self.is_connected
     
@@ -131,7 +134,7 @@ class CameraMonitor:
             
             # Get employee info
             employee = db.get_employee_by_place(roi.id)
-            employee_name = employee['name'] if employee else f"Место {roi.id}"
+            employee_name = employee['name'] if employee else f"Place {roi.id}"
             employee_id = employee['id'] if employee else None
             
             # Get work time (daily total)
@@ -147,7 +150,8 @@ class CameraMonitor:
                 'employee_name': employee_name,
                 'work_time': work_time,
                 'client_count': client_stats['client_count'],
-                'client_service_time': client_stats['total_service_time']
+                'client_service_time': client_stats['total_service_time'],
+                'roi_points': roi.points  # Pass polygon points for positioning
             }
         
         frame = draw_employee_stats_overlay(frame, roi_stats, roi_positions)
@@ -215,12 +219,26 @@ class WorkplaceMonitor:
         
         # Current camera index
         self.current_camera_idx = 0
+        self.background_processing_idx = 0  # For Round-Robin background processing
+        
+        # Auto-cycle state (ping-pong: 1→16→15→...→1)
+        self.auto_cycle_enabled = True
+        self.auto_cycle_direction = 1  # 1 = forward, -1 = backward
+        self.last_cycle_time = 0.0
+        self.auto_cycle_paused_until = 0.0  # Timestamp when pause ends
+        
+        # Fullscreen state
+        self.is_fullscreen = True
         
         # UI state
         self.show_stats = False
-        self.show_help = True
+        self.show_help = False  # Start without help in production
         self.running = False
         self.window_name = "Workplace Monitoring"
+        
+        # Seed employees from config (only creates missing ones)
+        if WORKPLACE_OWNERS:
+            db.seed_employees_from_config(WORKPLACE_OWNERS)
     
     @property
     def current_camera(self) -> CameraMonitor:
@@ -242,67 +260,130 @@ class WorkplaceMonitor:
             print("❌ No cameras connected. Exiting.")
             return
         
-        # Create window
-        cv2.namedWindow(self.window_name)
+        # Import predefined ROIs for cameras that have them
+        self._import_predefined_rois()
+        
+        # Create fullscreen window
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        if self.is_fullscreen:
+            cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         cv2.setMouseCallback(
             self.window_name, 
             create_mouse_callback(self.current_camera.roi_editor)
         )
         
         self.running = True
+        self.last_cycle_time = time.time()
         print("\n🎬 Monitoring started! Press 'H' for help, 'Q' to quit\n")
         
         try:
             while self.running:
                 display_frame = None
                 
-                # Process ALL cameras
+                # =========================================================
+                # Performance Optimization: Round-Robin Detection
+                # =========================================================
+                # 1. ALWAYS process the currently viewed camera (for smooth UI)
+                # 2. Process ONE background camera per frame (to distribute load)
+                # =========================================================
+                
+                # List of cameras to process this frame
+                cameras_to_process = []
+                
+                # Always add current active camera
+                if self.current_camera.is_connected:
+                    cameras_to_process.append(self.current_camera)
+                
+                # Pick next background camera (Round-Robin independent of view)
+                # Find a connected camera that isn't the current one
+                start_idx = self.background_processing_idx
+                offset = 0
+                background_cam = None
+                
+                while offset < len(self.cameras):
+                    idx = (start_idx + offset) % len(self.cameras)
+                    cam = self.cameras[idx]
+                    
+                    # Skip if it's the current camera (already processed) or not connected
+                    if cam != self.current_camera and cam.is_connected:
+                        background_cam = cam
+                        # FOUND ONE! Update global index for next frame to start AFTER this one
+                        self.background_processing_idx = (idx + 1) % len(self.cameras)
+                        break
+                    offset += 1
+                
+                # If we didn't find one (e.g. only 1 camera connected), just cycle index
+                if not background_cam:
+                     self.background_processing_idx = (self.background_processing_idx + 1) % len(self.cameras)
+
+                if background_cam:
+                    cameras_to_process.append(background_cam)
+                
+                # ---------------------------------------------------------
+                # Processing Loop
+                # ---------------------------------------------------------
+                display_frame = None
+                
+                # 1. READ frames from ALL cameras (non-blocking now thanks to threads)
+                # We need fresh frames for display when switching, even if not detections
+                frames = {}
                 for i, camera in enumerate(self.cameras):
                     if not camera.is_connected:
                         continue
-                        
-                    # Read frame
                     ret, frame = camera.stream.read_frame()
-                    if not ret:
+                    if ret:
+                        frames[camera.camera_db_id] = frame
+                        
+                        # If this is the current camera, save for display
                         if i == self.current_camera_idx:
-                            display_frame = self._create_error_frame(f"Connection lost: {camera.config.name}")
+                            display_frame = frame.copy()
+                            
+                # 2. RUN DETECTION only on selected cameras
+                for camera in cameras_to_process:
+                    if camera.camera_db_id not in frames:
                         continue
+                        
+                    frame = frames[camera.camera_db_id]
                     
-                    # Process frame (employee zones detection)
-                    # Note: Running YOLO for every camera every frame might be heavy
+                    # Run AI detection (YOLO)
                     processed_frame, person_count = camera.process_frame(frame)
                     
-                    # Process client zones with ByteTrack
+                    # Run ByteTrack for client zones
                     processed_frame = self._process_client_zones(processed_frame, camera)
                     
-                    # If this is the current camera, prepare for display
-                    if i == self.current_camera_idx:
-                        display_frame = processed_frame.copy()
+                    # If this was Current Camera, update display frame with annotations
+                    if camera == self.current_camera:
+                        display_frame = processed_frame
                         
-                        # Draw person count on display frame
+                        # Draw person count
                         cv2.putText(
                             display_frame, f"Persons: {person_count}", (10, display_frame.shape[0] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
                         )
-                        
-                        # Draw camera info
-                        self._draw_camera_info(display_frame)
-                        
-                        # Draw UI panels
-                        if self.show_stats:
-                            stats = camera.get_stats()
-                            display_frame = draw_stats_panel(display_frame, stats)
-                        
-                        if self.show_help:
-                            display_frame = draw_help_panel(display_frame)
-                        
-                        # Draw ROI editor overlay if drawing
-                        if self.roi_editor.is_drawing:
-                            display_frame = self.roi_editor.draw_current(display_frame)
+                
+                # 3. UI OVERLAYS (on display frame only)
+                if display_frame is not None:
+                    # Draw camera info
+                    self._draw_camera_info(display_frame)
+                    
+                    # Draw UI panels
+                    if self.show_stats:
+                        stats = self.current_camera.get_stats()
+                        display_frame = draw_stats_panel(display_frame, stats)
+                    
+                    if self.show_help:
+                        display_frame = draw_help_panel(display_frame)
+                    
+                    # Draw ROI editor
+                    if self.current_camera.roi_editor.is_drawing:
+                        display_frame = self.current_camera.roi_editor.draw_current(display_frame)
 
                 # Display current camera frame
                 if display_frame is not None:
                     cv2.imshow(self.window_name, display_frame)
+                
+                # Auto-cycle cameras (ping-pong)
+                self._auto_cycle()
                 
                 # Handle keyboard
                 self._handle_keyboard()
@@ -456,11 +537,49 @@ class WorkplaceMonitor:
         
         return frame
     
-    def _switch_camera(self, delta: int):
-        """Switch to another camera (view only)"""
-        # No disconnect needed - all cameras keep running
+    def _auto_cycle(self):
+        """Auto-cycle cameras in ping-pong mode"""
+        if not self.auto_cycle_enabled:
+            return
+        if len(self.cameras) <= 1:
+            return
         
+        now = time.time()
+        
+        # Check if paused (manual override)
+        if now < self.auto_cycle_paused_until:
+            return
+        
+        # Check if it's time to switch
+        if now - self.last_cycle_time < AUTO_CYCLE_INTERVAL:
+            return
+        
+        self.last_cycle_time = now
+        
+        # Ping-pong: reverse direction at boundaries
+        next_idx = self.current_camera_idx + self.auto_cycle_direction
+        
+        if next_idx >= len(self.cameras):
+            self.auto_cycle_direction = -1
+            next_idx = self.current_camera_idx - 1
+        elif next_idx < 0:
+            self.auto_cycle_direction = 1
+            next_idx = self.current_camera_idx + 1
+        
+        self.current_camera_idx = next_idx
+        
+        # Update mouse callback
+        cv2.setMouseCallback(
+            self.window_name,
+            create_mouse_callback(self.current_camera.roi_editor)
+        )
+    
+    def _switch_camera(self, delta: int):
+        """Switch to another camera (view only) — pauses auto-cycle"""
         self.current_camera_idx = (self.current_camera_idx + delta) % len(self.cameras)
+        
+        # Pause auto-cycle for 30 seconds
+        self.auto_cycle_paused_until = time.time() + AUTO_CYCLE_PAUSE_DURATION
         
         # Update mouse callback for new camera's ROI editor
         cv2.setMouseCallback(
@@ -468,7 +587,25 @@ class WorkplaceMonitor:
             create_mouse_callback(self.current_camera.roi_editor)
         )
         
-        print(f"👀 Viewing: {self.current_camera.config.name}")
+        print(f"👀 Viewing: {self.current_camera.config.name} (auto-cycle paused 30s)")
+    
+    def _import_predefined_rois(self):
+        """Import pre-defined ROIs from config for cameras that have them"""
+        for camera in self.cameras:
+            config = camera.config
+            if config.predefined_rois and config.ref_res:
+                # Get actual frame resolution
+                frame_res = camera.stream.get_frame_size()
+                if frame_res[0] == 0 or frame_res[1] == 0:
+                    frame_res = (1920, 1080)  # Default fallback
+                
+                imported = camera.roi_manager.import_predefined_rois(
+                    predefined_rois=config.predefined_rois,
+                    ref_res=config.ref_res,
+                    frame_res=frame_res
+                )
+                if imported:
+                    print(f"📍 {config.name}: imported {imported} predefined ROIs")
     
     def _handle_keyboard(self):
         """Handle keyboard input"""
@@ -548,13 +685,27 @@ class WorkplaceMonitor:
         elif key == ord('h') or key == ord('H'):
             self.show_help = not self.show_help
         
+        elif key == ord('f') or key == ord('F'):
+            # Toggle fullscreen
+            self.is_fullscreen = not self.is_fullscreen
+            if self.is_fullscreen:
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            else:
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+        
+        elif key == ord('a') or key == ord('A'):
+            # Toggle auto-cycle
+            self.auto_cycle_enabled = not self.auto_cycle_enabled
+            status = "ON" if self.auto_cycle_enabled else "OFF"
+            print(f"🔄 Auto-cycle: {status}")
+        
         elif key == ord('n') or key == ord('N'):
-            # Next camera
+            # Next camera (manual)
             if len(self.cameras) > 1:
                 self._switch_camera(1)
         
         elif key == ord('p') or key == ord('P'):
-            # Previous camera
+            # Previous camera (manual)
             if len(self.cameras) > 1:
                 self._switch_camera(-1)
     

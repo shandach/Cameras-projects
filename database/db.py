@@ -91,7 +91,8 @@ class Database:
     # ============ Place Operations ============
     
     def save_place(self, camera_id: int, name: str, roi_coordinates: list,
-                   zone_type: str = "employee", linked_employee_id: int = None) -> Place:
+                   zone_type: str = "employee", linked_employee_id: int = None,
+                   employee_id: int = None) -> Place:
         """Save a new place/zone"""
         with self.get_session() as session:
             place = Place(
@@ -99,7 +100,8 @@ class Database:
                 name=name, 
                 roi_coordinates=roi_coordinates,
                 zone_type=zone_type,
-                linked_employee_id=linked_employee_id
+                linked_employee_id=linked_employee_id,
+                employee_id=employee_id
             )
             session.add(place)
             session.commit()
@@ -163,11 +165,13 @@ class Database:
     # ============ Session Operations ============
     
     def save_session(self, place_id: int, start_time: datetime, 
-                     end_time: datetime, duration_seconds: float) -> Session:
-        """Save a work session"""
+                     end_time: datetime, duration_seconds: float,
+                     employee_id: int = None) -> Session:
+        """Save a work session, linked directly to employee"""
         with self.get_session() as session:
             work_session = Session(
                 place_id=place_id,
+                employee_id=employee_id,
                 start_time=start_time,
                 end_time=end_time,
                 duration_seconds=duration_seconds,
@@ -222,6 +226,16 @@ class Database:
         with self.get_session() as session:
             total = session.query(func.sum(Session.duration_seconds)).filter(
                 Session.place_id == place_id,
+                Session.session_date == target_date
+            ).scalar()
+            return total if total else 0.0
+    
+    def get_total_time_for_employee_day(self, employee_id: int, target_date: date) -> float:
+        """Get total duration for an employee on a specific date (across ALL zones)"""
+        from sqlalchemy import func
+        with self.get_session() as session:
+            total = session.query(func.sum(Session.duration_seconds)).filter(
+                Session.employee_id == employee_id,
                 Session.session_date == target_date
             ).scalar()
             return total if total else 0.0
@@ -332,6 +346,28 @@ class Database:
                 'client_count': client_count,
                 'total_service_time': total_time
             }
+
+    def seed_employees_from_config(self, workplace_owners: dict):
+        """
+        Create employees from WORKPLACE_OWNERS config if they don't exist.
+        Uses workplace_id as a stable identifier.
+        
+        Args:
+            workplace_owners: {workplace_id: operator_name, ...}
+        """
+        existing = self.get_all_employees()
+        existing_names = {e['name'] for e in existing}
+        
+        created = 0
+        for wp_id, name in workplace_owners.items():
+            if name not in existing_names:
+                self.create_employee(name=name, position="Оператор")
+                created += 1
+        
+        if created:
+            print(f"👥 Создано {created} операторов из конфигурации")
+        else:
+            print(f"👥 Все {len(workplace_owners)} операторов уже в БД")
 
 
 # Global database instance

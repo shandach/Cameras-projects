@@ -158,13 +158,19 @@ class OccupancyEngine:
         # Save to database
         if tracker.session_start and duration > 0:
             try:
+                # Look up employee assigned to this zone
+                employee = db.get_employee_by_place(tracker.zone_id)
+                employee_id = employee['id'] if employee else None
+                
                 session = db.save_session(
                     place_id=tracker.zone_id,
                     start_time=tracker.session_start,
                     end_time=datetime.now(),
-                    duration_seconds=duration
+                    duration_seconds=duration,
+                    employee_id=employee_id
                 )
-                print(f"💾 Session saved to database: {session}")
+                emp_name = employee['name'] if employee else 'N/A'
+                print(f"💾 Session saved: {emp_name} ({duration:.0f}s)")
             except Exception as e:
                 print(f"⚠️ Failed to save session: {e}")
         
@@ -191,9 +197,21 @@ class OccupancyEngine:
         return tracker.get_elapsed_time()
         
     def get_total_daily_time(self, zone_id: int) -> float:
-        """Get total accumulated time for today (historical + current session)"""
-        # Get historical total from DB
-        historical_total = db.get_total_time_for_day(zone_id, date.today())
+        """Get total accumulated time for today (historical + current session).
+        Uses employee_id if zone has an assigned employee (cross-zone total).
+        Falls back to place_id if no employee assigned.
+        """
+        # Check if zone has an assigned employee
+        employee = db.get_employee_by_place(zone_id)
+        
+        if employee:
+            # Query by employee_id — includes ALL zones this employee worked in
+            historical_total = db.get_total_time_for_employee_day(
+                employee['id'], date.today()
+            )
+        else:
+            # Fallback: query by place_id only
+            historical_total = db.get_total_time_for_day(zone_id, date.today())
         
         # Add current session time
         current_session = self.get_zone_time(zone_id)

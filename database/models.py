@@ -76,7 +76,8 @@ class Session(Base):
     __tablename__ = "sessions"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    place_id = Column(Integer, ForeignKey("places.id"), nullable=False)
+    place_id = Column(Integer, ForeignKey("places.id", ondelete="SET NULL"), nullable=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, default=0.0)
@@ -85,9 +86,10 @@ class Session(Base):
     
     # Relationships
     place = relationship("Place", back_populates="sessions")
+    employee = relationship("Employee")
     
     def __repr__(self):
-        return f"<Session(id={self.id}, place_id={self.place_id}, duration={self.duration_seconds}s)>"
+        return f"<Session(id={self.id}, place_id={self.place_id}, employee_id={self.employee_id}, duration={self.duration_seconds}s)>"
 
 
 class ClientVisit(Base):
@@ -95,7 +97,7 @@ class ClientVisit(Base):
     __tablename__ = "client_visits"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    place_id = Column(Integer, ForeignKey("places.id"), nullable=False)
+    place_id = Column(Integer, ForeignKey("places.id", ondelete="SET NULL"), nullable=True)
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)  # Сотрудник, который обслужил
     track_id = Column(Integer, nullable=False)  # ByteTrack ID
     visit_date = Column(Date, default=date.today)
