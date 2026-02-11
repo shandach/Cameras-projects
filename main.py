@@ -29,7 +29,8 @@ from datetime import date
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config,
-                    WORKPLACE_OWNERS, AUTO_CYCLE_INTERVAL, AUTO_CYCLE_PAUSE_DURATION)
+                    WORKPLACE_OWNERS, AUTO_CYCLE_INTERVAL, AUTO_CYCLE_PAUSE_DURATION,
+                    FULLSCREEN_MODE)
 from core.stream_handler import StreamHandler
 from core.detector import PersonDetector, PoseDetector, TrackingDetector
 from core.roi_manager import ROIManager
@@ -228,7 +229,8 @@ class WorkplaceMonitor:
         self.auto_cycle_paused_until = 0.0  # Timestamp when pause ends
         
         # Fullscreen state
-        self.is_fullscreen = True
+        # Fullscreen state (Loaded from .env, default False for debugging)
+        self.is_fullscreen = FULLSCREEN_MODE
         
         # UI state
         self.show_stats = False
@@ -352,8 +354,16 @@ class WorkplaceMonitor:
                         display_frame = self.current_camera.roi_editor.draw_current(display_frame)
 
                 # Display current camera frame
+                # Display current camera frame (or error frame if None)
                 if display_frame is not None:
                     cv2.imshow(self.window_name, display_frame)
+                else:
+                    # If camera is offline/connecting, show status frame instead of freezing
+                    status_frame = self._create_error_frame("No Signal / Reconnecting...")
+                    # Add camera info if possible
+                    if self.cameras:
+                        self._draw_camera_info(status_frame)
+                    cv2.imshow(self.window_name, status_frame)
                 
                 # Auto-cycle cameras (ping-pong)
                 self._auto_cycle()

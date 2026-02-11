@@ -184,6 +184,7 @@ AUTO_CYCLE_PAUSE_DURATION = 30.0  # seconds to pause after manual switch
 
 # Display settings
 WINDOW_NAME = "Workplace Monitoring"
+FULLSCREEN_MODE = os.getenv("FULLSCREEN_MODE", "false").lower() == "true"
 ROI_COLOR_VACANT = (0, 255, 0)      # Green
 ROI_COLOR_OCCUPIED = (0, 0, 255)    # Red
 ROI_COLOR_DRAWING = (255, 255, 0)   # Cyan
