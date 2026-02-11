@@ -280,45 +280,6 @@ class WorkplaceMonitor:
             while self.running:
                 display_frame = None
                 
-                # =========================================================
-                # Performance Optimization: Round-Robin Detection
-                # =========================================================
-                # 1. ALWAYS process the currently viewed camera (for smooth UI)
-                # 2. Process ONE background camera per frame (to distribute load)
-                # =========================================================
-                
-                # List of cameras to process this frame
-                cameras_to_process = []
-                
-                # Always add current active camera
-                if self.current_camera.is_connected:
-                    cameras_to_process.append(self.current_camera)
-                
-                # Pick next background camera (Round-Robin independent of view)
-                # Find a connected camera that isn't the current one
-                start_idx = self.background_processing_idx
-                offset = 0
-                background_cam = None
-                
-                while offset < len(self.cameras):
-                    idx = (start_idx + offset) % len(self.cameras)
-                    cam = self.cameras[idx]
-                    
-                    # Skip if it's the current camera (already processed) or not connected
-                    if cam != self.current_camera and cam.is_connected:
-                        background_cam = cam
-                        # FOUND ONE! Update global index for next frame to start AFTER this one
-                        self.background_processing_idx = (idx + 1) % len(self.cameras)
-                        break
-                    offset += 1
-                
-                # If we didn't find one (e.g. only 1 camera connected), just cycle index
-                if not background_cam:
-                     self.background_processing_idx = (self.background_processing_idx + 1) % len(self.cameras)
-
-                if background_cam:
-                    cameras_to_process.append(background_cam)
-                
                 # ---------------------------------------------------------
                 # Processing Loop
                 # ---------------------------------------------------------
@@ -338,9 +299,20 @@ class WorkplaceMonitor:
                         if i == self.current_camera_idx:
                             display_frame = frame.copy()
                             
-                # 2. RUN DETECTION only on selected cameras
-                for camera in cameras_to_process:
+                # 2. RUN DETECTION on ALL connected cameras simultaneously
+                # (User Requirement: "Display/Process all ROI zones on all cameras simultaneously")
+                # Warning: High CPU usage expected!
+                for camera in self.cameras:
+                    if not camera.is_connected:
+                        continue
+                        
                     if camera.camera_db_id not in frames:
+                        continue
+                        
+                    # OPTIMIZATION: Process only if ROIs exist
+                    # If no ROIs, skip YOLO/ByteTrack to save CPU
+                    # (User requirement: "Process only where ROI zones are drawn")
+                    if not camera.roi_manager.get_all_rois():
                         continue
                         
                     frame = frames[camera.camera_db_id]
@@ -352,6 +324,7 @@ class WorkplaceMonitor:
                     processed_frame = self._process_client_zones(processed_frame, camera)
                     
                     # If this was Current Camera, update display frame with annotations
+                    # (Note: background cameras are processed/drawn but result is just discarded here unless displayed)
                     if camera == self.current_camera:
                         display_frame = processed_frame
                         
@@ -591,21 +564,39 @@ class WorkplaceMonitor:
     
     def _import_predefined_rois(self):
         """Import pre-defined ROIs from config for cameras that have them"""
+        print("\n🔍 Checking ROI configuration...")
         for camera in self.cameras:
             config = camera.config
-            if config.predefined_rois and config.ref_res:
-                # Get actual frame resolution
-                frame_res = camera.stream.get_frame_size()
-                if frame_res[0] == 0 or frame_res[1] == 0:
-                    frame_res = (1920, 1080)  # Default fallback
+            current_rois = camera.roi_manager.get_all_rois()
+            
+            # CASE 1: Zones exist -> Good.
+            if current_rois:
+                print(f"✅ {config.name}: Loaded {len(current_rois)} zones from storage.")
+                continue
+
+            # CASE 2: No zones, but template exists -> RESTORE.
+            if not current_rois and config.predefined_rois:
+                print(f"⚠️ {config.name}: No zones found! Attempting to restore from template...")
                 
-                imported = camera.roi_manager.import_predefined_rois(
-                    predefined_rois=config.predefined_rois,
-                    ref_res=config.ref_res,
-                    frame_res=frame_res
-                )
-                if imported:
-                    print(f"📍 {config.name}: imported {imported} predefined ROIs")
+                if config.ref_res:
+                    # Get actual frame resolution
+                    frame_res = camera.stream.get_frame_size()
+                    if frame_res[0] == 0 or frame_res[1] == 0:
+                        frame_res = (1920, 1080)  # Default fallback
+                    
+                    imported = camera.roi_manager.import_predefined_rois(
+                        predefined_rois=config.predefined_rois,
+                        ref_res=config.ref_res,
+                        frame_res=frame_res
+                    )
+                    if imported:
+                        print(f"✅ {config.name}: RESTORED {imported} zones from template.")
+                    else:
+                        print(f"❌ {config.name}: Failed to restore zones.")
+            
+            # CASE 3: No zones, no template -> View Only.
+            else:
+                 print(f"ℹ️ {config.name}: No zones configured. Camera will be View-Only (no AI).")
     
     def _handle_keyboard(self):
         """Handle keyboard input"""
