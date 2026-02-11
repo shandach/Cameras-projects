@@ -54,7 +54,7 @@ def load_cameras_from_env() -> List[CameraConfig]:
             rtsp_user = os.getenv('RTSP_USER')
             rtsp_password = os.getenv('RTSP_PASSWORD')
             
-            if rtsp_user and rtsp_password and 'rtsp://' in url:
+            if rtsp_user and rtsp_password and 'rtsp://' in url and '@' not in url:
                 url = url.replace('rtsp://', f'rtsp://{rtsp_user}:{rtsp_password}@')
             
             cameras.append(CameraConfig(
