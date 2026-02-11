@@ -57,11 +57,19 @@ def load_cameras_from_env() -> List[CameraConfig]:
             if rtsp_user and rtsp_password and 'rtsp://' in url and '@' not in url:
                 url = url.replace('rtsp://', f'rtsp://{rtsp_user}:{rtsp_password}@')
             
-            cameras.append(CameraConfig(
+            cam_config = CameraConfig(
                 id=camera_id,
                 name=camera_name,
                 url=url
-            ))
+            )
+            
+            # Apply ROI Template if available
+            if camera_id in ROI_TEMPLATES:
+                tmpl = ROI_TEMPLATES[camera_id]
+                cam_config.predefined_rois = tmpl["rois"]
+                cam_config.ref_res = tmpl["ref_res"]
+                
+            cameras.append(cam_config)
     
     cameras.sort(key=lambda c: c.id)
     return cameras
@@ -74,10 +82,46 @@ def load_cameras_from_env() -> List[CameraConfig]:
 # NOTE: Real camera URLs should be in .env file for security.
 # Example: CAMERA_1_URL=rtsp://admin:pass@192.168.1.100:554/...
 
-DEFAULT_CAMERAS = [
-    # Example placeholder camera
-    # CameraConfig(id=1, name="Demo Cam", url="0"), # Use webcam
-]
+# ═══════════════════════════════════════════════════
+# PREDEFINED ROI TEMPLATES (Auto-Restore Source)
+# Extended with Reference Resolution for correct scaling
+# ═══════════════════════════════════════════════════
+
+ROI_TEMPLATES = {
+    1: {
+        "ref_res": (2560, 1440),
+        "rois": [
+            [(50, 650), (250, 400), (460, 492), (244, 682)],
+            [(306, 732), (508, 518), (674, 620), (430, 808)],
+            [(546, 858), (770, 606), (906, 710), (732, 980)],
+            [(1540, 452), (1318, 566), (1512, 1006), (1740, 802)],
+            [(1844, 624), (1554, 414), (1676, 294), (1900, 486)],
+            [(1720, 286), (1812, 190), (2010, 358), (1900, 420)],
+        ]
+    },
+    6: {
+        "ref_res": (2560, 1440),
+        "rois": [
+            [(422, 548), (640, 336), (788, 484), (508, 654)],
+            [(604, 742), (896, 506), (1148, 692), (788, 932)],
+            [(916, 1040), (1246, 756), (1584, 984), (1214, 1334)],
+        ]
+    },
+    7: {
+        "ref_res": (3200, 1800),
+        "rois": [
+            [(1062, 802), (1940, 357), (2515, 1190), (1580, 1637)],
+        ]
+    },
+    10: {
+        "ref_res": (3200, 1800),
+        "rois": [
+            [(680, 1230), (1500, 407), (2452, 1080), (1922, 1787)],
+        ]
+    }
+}
+
+DEFAULT_CAMERAS = []
 
 
 # ═══════════════════════════════════════════════════
