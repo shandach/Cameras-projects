@@ -153,11 +153,11 @@ WORKPLACE_OWNERS = {
 # Load cameras: prefer .env, fallback to DEFAULT_CAMERAS
 CAMERAS = load_cameras_from_env()
 if not CAMERAS:
-    print("⚠️ No cameras found in .env! Using defaults.")
+    print("[WARN] No cameras found in .env! Using defaults.")
     CAMERAS = DEFAULT_CAMERAS
     # If still empty (because we removed hardcoded ones), add a dummy one or warn user
     if not CAMERAS:
-         print("⚠️ No cameras configured. Please check .env file.")
+         print("[WARN] No cameras configured. Please check .env file.")
 
 
 # Detection settings
@@ -200,11 +200,11 @@ FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "720"))
 def print_config():
     """Print current configuration"""
     print("\n" + "=" * 50)
-    print("📹 CAMERA CONFIGURATION")
+    print("[INFO] CAMERA CONFIGURATION")
     print("=" * 50)
     
     if not CAMERAS:
-        print("⚠️  No cameras configured!")
+        print("[WARN]  No cameras configured!")
     else:
         for cam in CAMERAS:
             display_url = re.sub(r'://[^:]+:[^@]+@', '://***:***@', cam.url)

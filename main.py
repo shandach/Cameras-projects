@@ -185,7 +185,7 @@ class WorkplaceMonitor:
     """Main application - manages multiple cameras"""
     
     def __init__(self):
-        print("\n🏢 WORKPLACE MONITORING SYSTEM - MULTI-CAMERA")
+        print("\n WORKPLACE MONITORING SYSTEM - MULTI-CAMERA")
         print("=" * 50)
         
         # Print configuration
@@ -198,11 +198,11 @@ class WorkplaceMonitor:
             sys.exit(1)
         
         # Shared detector (one YOLO instance for all cameras)
-        print("🤖 Loading YOLO detector...")
+        print("[INFO] Loading YOLO detector...")
         self.detector = PersonDetector()
         
         # Tracking detector for client zones (ByteTrack)
-        print("🎯 Loading ByteTrack tracker...")
+        print("[INFO] Loading ByteTrack tracker...")
         self.tracking_detector = TrackingDetector()
         
         # Shared backup detector (MediaPipe Pose for when YOLO fails)
@@ -216,7 +216,7 @@ class WorkplaceMonitor:
         for cam_config in CAMERAS:
             monitor = CameraMonitor(cam_config, self.detector, self.pose_detector)
             self.cameras.append(monitor)
-            print(f"📹 Camera {cam_config.id}: {cam_config.name}")
+            print(f"[CAM] Camera {cam_config.id}: {cam_config.name}")
         
         # Current camera index
         self.current_camera_idx = 0
@@ -250,17 +250,19 @@ class WorkplaceMonitor:
         """Main application loop"""
         # Connect to ALL cameras
         connected_count = 0
-        print("🔌 Connecting to all cameras...")
+        print("[INFO] Connecting to all cameras...")
         for camera in self.cameras:
+            # Stagger connections to prevent UI freeze and network flood
+            time.sleep(0.1) 
             if camera.connect():
-                print(f"✅ Connected to {camera.config.name}")
+                print(f"[OK] Connected to {camera.config.name}")
                 connected_count += 1
             else:
-                print(f"❌ Failed to connect to {camera.config.name}")
+                print(f"[FAIL] Failed to connect to {camera.config.name}")
         
+        # Even if 0 cameras connected, we still run the UI (to show error screens)
         if connected_count == 0:
-            print("❌ No cameras connected. Exiting.")
-            return
+            print("⚠️ No cameras connected. Running in offline/error mode.")
         
         # Import predefined ROIs for cameras that have them
         self._import_predefined_rois()
@@ -276,7 +278,7 @@ class WorkplaceMonitor:
         
         self.running = True
         self.last_cycle_time = time.time()
-        print("\n🎬 Monitoring started! Press 'H' for help, 'Q' to quit\n")
+        print("\n Monitoring started! Press 'H' for help, 'Q' to quit\n")
         
         try:
             while self.running:
@@ -301,19 +303,40 @@ class WorkplaceMonitor:
                         if i == self.current_camera_idx:
                             display_frame = frame.copy()
                             
-                # 2. RUN DETECTION on ALL connected cameras simultaneously
-                # (User Requirement: "Display/Process all ROI zones on all cameras simultaneously")
-                # Warning: High CPU usage expected!
-                for camera in self.cameras:
-                    if not camera.is_connected:
-                        continue
-                        
+                # 2. RUN DETECTION (Round-Robin Optimization)
+                # Strategy:
+                # - ALWAYS process the Current Camera (for smooth UI/Feedback)
+                # - Process ONE Background Camera per frame (to keep history without lag)
+                
+                # List of cameras to process this frame
+                cameras_to_process = []
+                
+                # A) Always Current Camera
+                if self.current_camera.is_connected:
+                    cameras_to_process.append(self.current_camera)
+                
+                # B) One Background Camera (Round-Robin)
+                # Find next connected background camera
+                checked_count = 0
+                while checked_count < len(self.cameras):
+                    idx = self.background_processing_idx
+                    cam = self.cameras[idx]
+                    
+                    # Move index for next frame
+                    self.background_processing_idx = (idx + 1) % len(self.cameras)
+                    
+                    if cam != self.current_camera and cam.is_connected:
+                        cameras_to_process.append(cam)
+                        break
+                    
+                    checked_count += 1
+                
+                # Execute Processing
+                for camera in cameras_to_process:
                     if camera.camera_db_id not in frames:
                         continue
                         
                     # OPTIMIZATION: Process only if ROIs exist
-                    # If no ROIs, skip YOLO/ByteTrack to save CPU
-                    # (User requirement: "Process only where ROI zones are drawn")
                     if not camera.roi_manager.get_all_rois():
                         continue
                         
@@ -325,8 +348,7 @@ class WorkplaceMonitor:
                     # Run ByteTrack for client zones
                     processed_frame = self._process_client_zones(processed_frame, camera)
                     
-                    # If this was Current Camera, update display frame with annotations
-                    # (Note: background cameras are processed/drawn but result is just discarded here unless displayed)
+                    # If this was Current Camera, update display frame
                     if camera == self.current_camera:
                         display_frame = processed_frame
                         
@@ -334,6 +356,14 @@ class WorkplaceMonitor:
                         cv2.putText(
                             display_frame, f"Persons: {person_count}", (10, display_frame.shape[0] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
+                        )
+                        
+                        # Draw Resolution (Debugging ROI Shift)
+                        h, w = frame.shape[:2]
+                        res_text = f"Res: {w}x{h}"
+                        cv2.putText(
+                            display_frame, res_text, (w - 200, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
                         )
                 
                 # 3. UI OVERLAYS (on display frame only)
@@ -372,13 +402,13 @@ class WorkplaceMonitor:
                 self._handle_keyboard()
         
         except KeyboardInterrupt:
-            print("\n⚠️ Interrupted by user")
+            print("\n[WARN] Interrupted by user")
         
         finally:
             for camera in self.cameras:
                 camera.disconnect()
             cv2.destroyAllWindows()
-            print("👋 Monitoring stopped")
+            print(" Monitoring stopped")
     
     def _create_error_frame(self, message: str):
         """Create error/status frame"""
@@ -732,14 +762,12 @@ class WorkplaceMonitor:
 
 def main():
     """Entry point"""
-    print("""
-╔══════════════════════════════════════════════════╗
-║  🏢  WORKPLACE MONITORING SYSTEM  🏢             ║
-║  ──────────────────────────────────────────      ║
-║  Multi-Camera RTSP Version                       ║
-║  Real-time presence detection with time tracking ║
-╚══════════════════════════════════════════════════╝
-    """)
+    print("=" * 50)
+    print(" WORKPLACE MONITORING SYSTEM")
+    print("=" * 50)
+    print(" Multi-Camera RTSP Version")
+    print(" Real-time presence detection with time tracking")
+    print("=" * 50)
     
     monitor = WorkplaceMonitor()
     monitor.run()

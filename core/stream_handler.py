@@ -32,6 +32,7 @@ class StreamHandler:
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 10  # Increased for stability
         self.reconnect_delay = 5  # seconds
+        self.connection_timeout = 5000  # 5 seconds timeout for opening stream
         
         # Threading support
         self.thread = None
@@ -95,9 +96,14 @@ class StreamHandler:
             if url.isdigit():
                 self.cap = cv2.VideoCapture(int(url))
             else:
-                # RTSP transport=tcp is more stable for WiFi/WAN
-                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp" 
+                # Use TCP transport (more stable) and set timeout
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp" 
                 self.cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+                
+                # Try to set timeout (note: not all backends support this, but good to try)
+                # For FFmpeg backend, we can't easily set open timeout via python-opencv parameters directly 
+                # without rebuilding, but we can rely on thread join in main.py to not block UI.
+                
                 
             if self.cap.isOpened():
                 # self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) # Not supported by all backends
@@ -121,21 +127,24 @@ class StreamHandler:
         self._connect()
 
     def read_frame(self):
-        """
-        Get the latest frame (non-blocking)
+        """Read the latest frame from the buffer"""
+        from config import FRAME_WIDTH, FRAME_HEIGHT
         
-        Returns:
-            tuple: (success, frame)
-        """
-        with self.lock:
-            if self.last_read_success and self.latest_frame is not None:
-                return True, self.latest_frame.copy()
+        if not self.is_running:
             return False, None
-    
+            
+        with self.lock:
+            if self.latest_frame is None:
+                return False, None
+            
+            # Resize if dimensions differ (Software Resolution Force)
+            if self.latest_frame.shape[1] != FRAME_WIDTH or self.latest_frame.shape[0] != FRAME_HEIGHT:
+                resized = cv2.resize(self.latest_frame, (FRAME_WIDTH, FRAME_HEIGHT))
+                return True, resized
+                
+            return True, self.latest_frame.copy()
+
     def get_frame_size(self) -> tuple:
-        """Get frame dimensions"""
-        if not self.cap:
-            return (0, 0)
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         return (width, height)
