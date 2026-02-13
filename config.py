@@ -193,8 +193,8 @@ FONT_SCALE = 0.6
 LINE_THICKNESS = 2
 
 # Frame settings
-FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "1280"))
-FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "720"))
+FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "2560"))
+FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "1440"))
 
 
 def print_config():
