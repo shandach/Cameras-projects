@@ -455,6 +455,28 @@ class WorkplaceMonitor:
         for roi in client_zones:
             zone_key = (camera_id, roi.id)
             
+            # ── Employee Presence Guard ──
+            # Check if the linked employee is at their workstation
+            employee_present = False
+            if roi.linked_employee_id:
+                for emp_roi in camera.roi_manager.get_all_rois():
+                    if (emp_roi.zone_type == "employee" and 
+                        emp_roi.employee_id == roi.linked_employee_id and
+                        emp_roi.status == "OCCUPIED"):
+                        employee_present = True
+                        break
+            
+            # If employee is NOT present → skip client tracking entirely
+            if not employee_present:
+                # Reset any active tracking for this zone
+                if zone_key in self.client_tracking:
+                    self.client_tracking[zone_key] = {
+                        'active_client': None,
+                        'clients': {}
+                    }
+                continue
+            # ── End Guard ──
+            
             # Initialize zone state: {'active_client': track_id or None, 'clients': {track_id: data}}
             if zone_key not in self.client_tracking:
                 self.client_tracking[zone_key] = {
