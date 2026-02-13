@@ -35,7 +35,7 @@ from config import (CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config,
                     WORKPLACE_OWNERS, AUTO_CYCLE_INTERVAL, AUTO_CYCLE_PAUSE_DURATION,
                     FULLSCREEN_MODE)
 from core.stream_handler import StreamHandler
-from core.detector import PersonDetector, PoseDetector, TrackingDetector
+from core.detector import PersonDetector, HeadDetector, TrackingDetector
 from core.roi_manager import ROIManager
 from core.occupancy_engine import OccupancyEngine
 from gui.roi_editor import ROIEditor, create_mouse_callback
@@ -46,18 +46,18 @@ from database.db import db
 class CameraMonitor:
     """Monitor for a single camera"""
     
-    def __init__(self, camera_config, detector: PersonDetector, pose_detector: PoseDetector):
+    def __init__(self, camera_config, detector: PersonDetector, head_detector: HeadDetector):
         """
         Initialize camera monitor
         
         Args:
             camera_config: CameraConfig from .env
-            detector: Shared YOLOv8 detector instance
-            pose_detector: Shared MediaPipe Pose detector (backup)
+            detector: Shared YOLOv8 body detector instance
+            head_detector: Shared YOLO head detector (fallback for rear/top view)
         """
         self.config = camera_config
         self.detector = detector
-        self.pose_detector = pose_detector  # Резервный детектор
+        self.head_detector = head_detector  # Резервный детектор голов
         
         # Get or create camera in database
         self.db_camera = db.get_or_create_camera(camera_config)
@@ -88,12 +88,12 @@ class CameraMonitor:
         detections = self.detector.detect(frame)
         person_centers = [d.center for d in detections]
         
-        # If YOLO didn't detect anyone, try MediaPipe Pose (backup)
+        # If YOLO-body didn't detect anyone, try YOLO-head (backup)
         used_backup = False
         if not person_centers:
-            pose_centers = self.pose_detector.detect(frame)
-            if pose_centers:
-                person_centers = pose_centers
+            head_centers = self.head_detector.detect(frame)
+            if head_centers:
+                person_centers = head_centers
                 used_backup = True
         
         # Check presence in ROIs
@@ -208,8 +208,8 @@ class WorkplaceMonitor:
         print("[INFO] Loading ByteTrack tracker...")
         self.tracking_detector = TrackingDetector()
         
-        # Shared backup detector (MediaPipe Pose for when YOLO fails)
-        self.pose_detector = PoseDetector()
+        # Shared backup detector (YOLO Head for when body detection fails)
+        self.head_detector = HeadDetector()
         
         # Client tracking state: {(camera_id, roi_id): {track_id: {'enter_time': datetime, 'last_seen': datetime}}}
         self.client_tracking = {}
@@ -217,7 +217,7 @@ class WorkplaceMonitor:
         # Create camera monitors
         self.cameras: list[CameraMonitor] = []
         for cam_config in CAMERAS:
-            monitor = CameraMonitor(cam_config, self.detector, self.pose_detector)
+            monitor = CameraMonitor(cam_config, self.detector, self.head_detector)
             self.cameras.append(monitor)
             print(f"[CAM] Camera {cam_config.id}: {cam_config.name}")
         
