@@ -18,6 +18,7 @@ Controls:
 - S: Toggle stats panel
 - H: Toggle help panel
 - F: Toggle Fullscreen
+- W: Toggle View All cameras (for drawing ROIs)
 - D: Next camera
 - A: Previous camera
 - Q: Quit
@@ -237,6 +238,7 @@ class WorkplaceMonitor:
         # UI state
         self.show_stats = False
         self.show_help = False  # Start without help in production
+        self.view_all_mode = False  # W key: show all cameras (including without ROIs)
         self.running = False
         self.window_name = "Workplace Monitoring"
         
@@ -250,21 +252,24 @@ class WorkplaceMonitor:
     
     def run(self):
         """Main application loop"""
-        # Connect to ALL cameras
+        # Connect ONLY cameras that have ROI zones (Lazy Connection)
         connected_count = 0
-        print("[INFO] Connecting to all cameras...")
+        print("[INFO] Connecting cameras with ROI zones...")
         for camera in self.cameras:
-            # Stagger connections to prevent UI freeze and network flood
-            time.sleep(0.1) 
-            if camera.connect():
-                print(f"[OK] Connected to {camera.config.name}")
-                connected_count += 1
+            has_rois = len(camera.roi_manager.get_all_rois()) > 0
+            if has_rois:
+                time.sleep(0.1)
+                if camera.connect():
+                    print(f"[OK] Connected to {camera.config.name}")
+                    connected_count += 1
+                else:
+                    print(f"[FAIL] Failed to connect to {camera.config.name}")
             else:
-                print(f"[FAIL] Failed to connect to {camera.config.name}")
+                print(f"[SKIP] {camera.config.name} — no ROI zones, not connecting")
         
         # Even if 0 cameras connected, we still run the UI (to show error screens)
         if connected_count == 0:
-            print("⚠️ No cameras connected. Running in offline/error mode.")
+            print("⚠️ No cameras with ROI zones. Press W to view all cameras and draw zones.")
         
         # Import predefined ROIs for cameras that have them
         self._import_predefined_rois()
@@ -621,21 +626,28 @@ class WorkplaceMonitor:
         )
     
     def _switch_camera(self, delta: int):
-        """Switch to another camera (view only) — skips cameras without ROIs"""
-        viewable = self._get_viewable_indices()
-        if not viewable:
-            print("⚠️ No cameras with ROI zones to display")
-            return
+        """Switch to another camera — skips cameras without ROIs (unless View All mode)"""
+        if self.view_all_mode:
+            # View All: cycle through ALL cameras
+            self.current_camera_idx = (self.current_camera_idx + delta) % len(self.cameras)
+        else:
+            # Normal: cycle only cameras with ROIs
+            viewable = self._get_viewable_indices()
+            if not viewable:
+                print("⚠️ No cameras with ROI zones. Press W to view all cameras.")
+                return
+            try:
+                pos = viewable.index(self.current_camera_idx)
+            except ValueError:
+                pos = 0
+            pos = (pos + delta) % len(viewable)
+            self.current_camera_idx = viewable[pos]
         
-        # Find current position in viewable list
-        try:
-            pos = viewable.index(self.current_camera_idx)
-        except ValueError:
-            pos = 0
-        
-        # Move to next/prev in viewable list
-        pos = (pos + delta) % len(viewable)
-        self.current_camera_idx = viewable[pos]
+        # Auto-connect if camera is not connected yet (View All mode)
+        camera = self.current_camera
+        if not camera.is_connected:
+            print(f"🔌 Connecting to {camera.config.name}...")
+            camera.connect()
         
         # Pause auto-cycle for 30 seconds
         self.auto_cycle_paused_until = time.time() + AUTO_CYCLE_PAUSE_DURATION
@@ -646,7 +658,9 @@ class WorkplaceMonitor:
             self._handle_mouse
         )
         
-        print(f"👀 Viewing: {self.current_camera.config.name} ({len(viewable)} cameras with ROIs)")
+        rois_count = len(camera.roi_manager.get_all_rois())
+        mode_str = "[VIEW ALL]" if self.view_all_mode else ""
+        print(f"👀 {mode_str} {camera.config.name} ({rois_count} ROIs)")
     
     def _get_viewable_indices(self):
         """Get indices of cameras that have ROI zones"""
@@ -797,6 +811,16 @@ class WorkplaceMonitor:
                 cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             else:
                 cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+        
+        elif key == ord('w') or key == ord('W'):
+            # Toggle View All mode (show all cameras including ones without ROIs)
+            self.view_all_mode = not self.view_all_mode
+            if self.view_all_mode:
+                print("🌐 VIEW ALL MODE: Showing all cameras (A/D to browse, draw ROIs as needed)")
+            else:
+                # Switch back to filtered mode — jump to first camera with ROIs
+                self._set_initial_camera()
+                print("📷 FILTERED MODE: Showing only cameras with ROI zones")
     
     def _save_roi_with_type(self, zone_type: str, linked_employee_id: int = None):
         """Save ROI with specified zone type"""

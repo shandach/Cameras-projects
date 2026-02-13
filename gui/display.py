@@ -107,6 +107,7 @@ def draw_help_panel(frame: np.ndarray) -> np.ndarray:
         "Z - Clear all ROIs",
         "Right-Click - Delete ROI",
         "A/D - Prev/Next camera",
+        "W - View All cameras",
         "S - Show stats",
         "ENTER - Finish ROI",
         "ESC - Cancel",
