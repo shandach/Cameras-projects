@@ -12,12 +12,12 @@ Controls:
 - R: Start drawing new ROI zone
 - ENTER: Finish ROI drawing
 - ESC: Cancel drawing
-- D: Delete last ROI
+- X: Delete last ROI
 - C: Clear all ROIs for current camera
 - S: Toggle stats panel
 - H: Toggle help panel
-- N: Next camera
-- P: Previous camera
+- D: Next camera
+- A: Previous camera
 - Q: Quit
 """
 import cv2
@@ -222,8 +222,8 @@ class WorkplaceMonitor:
         self.current_camera_idx = 0
         self.background_processing_idx = 0  # For Round-Robin background processing
         
-        # Auto-cycle state (ping-pong: 1→16→15→...→1)
-        self.auto_cycle_enabled = True
+        # Auto-cycle disabled by default (Manual mode: A/D keys)
+        self.auto_cycle_enabled = False
         self.auto_cycle_direction = 1  # 1 = forward, -1 = backward
         self.last_cycle_time = 0.0
         self.auto_cycle_paused_until = 0.0  # Timestamp when pause ends
@@ -686,59 +686,25 @@ class WorkplaceMonitor:
                 self._pending_roi_points = None
                 print("❌ ROI cancelled")
         
-        elif key == ord('d') or key == ord('D'):
+        elif key == ord('x') or key == ord('X'):
+            # Delete last ROI (Moved from D)
             rois = camera.roi_manager.get_all_rois()
             if rois:
                 camera.roi_manager.delete_roi(rois[-1].id)
+                print("🗑️ ROI deleted")
         
-        elif key == ord('c') or key == ord('C'):
-            # Check if waiting for zone type
-            if hasattr(self, '_waiting_zone_type') and self._waiting_zone_type:
-                # Client zone - need to link to employee
-                employees = db.get_all_employees()
-                if employees:
-                    print("👤 Выберите сотрудника (1-9, 0=10):")
-                    for i, emp in enumerate(employees[:10]):
-                        key_hint = 0 if i == 9 else i + 1  # 1-9 for first 9, 0 for 10th
-                        print(f"   {key_hint}: {emp['name']}")
-                    self._waiting_employee_link = True
-                    self._waiting_zone_type = False  # Important: switch state to prevent conflicts
-                else:
-                    print("⚠️ Сотрудники не найдены в БД. Создаём зону без привязки.")
-                    self._save_roi_with_type("client", linked_employee_id=None)
-            else:
-                # Clear all ROIs for current camera
-                camera.roi_manager.delete_all_rois()
-        
-        elif key == ord('s') or key == ord('S'):
-            self.show_stats = not self.show_stats
-        
-        elif key == ord('h') or key == ord('H'):
-            self.show_help = not self.show_help
-        
-        elif key == ord('f') or key == ord('F'):
-            # Toggle fullscreen
-            self.is_fullscreen = not self.is_fullscreen
-            if self.is_fullscreen:
-                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-            else:
-                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
-        
-        elif key == ord('a') or key == ord('A'):
-            # Toggle auto-cycle
-            self.auto_cycle_enabled = not self.auto_cycle_enabled
-            status = "ON" if self.auto_cycle_enabled else "OFF"
-            print(f"🔄 Auto-cycle: {status}")
-        
-        elif key == ord('n') or key == ord('N'):
-            # Next camera (manual)
+        elif key == ord('d') or key == ord('D'):
+             # Next camera (manual)
             if len(self.cameras) > 1:
                 self._switch_camera(1)
         
-        elif key == ord('p') or key == ord('P'):
+        elif key == ord('a') or key == ord('A'):
             # Previous camera (manual)
             if len(self.cameras) > 1:
                 self._switch_camera(-1)
+
+        # Removed: N/P keys (replaced by A/D)
+        # Removed: Auto-cycle toggle (A was used for this)
     
     def _save_roi_with_type(self, zone_type: str, linked_employee_id: int = None):
         """Save ROI with specified zone type"""
