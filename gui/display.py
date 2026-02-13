@@ -103,9 +103,10 @@ def draw_help_panel(frame: np.ndarray) -> np.ndarray:
     help_text = [
         "Controls:",
         "R - Draw new ROI",
-        "D - Delete last ROI",
-        "C - Clear all ROIs",
-        "N/P - Next/Prev camera",
+        "X - Delete last ROI",
+        "Z - Clear all ROIs",
+        "Right-Click - Delete ROI",
+        "A/D - Prev/Next camera",
         "S - Show stats",
         "ENTER - Finish ROI",
         "ESC - Cancel",

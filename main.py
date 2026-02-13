@@ -10,12 +10,14 @@ Real-time video monitoring with:
 
 Controls:
 - R: Start drawing new ROI zone
-- ENTER: Finish ROI drawing
+- ENTER: Finish ROI drawing (then C=Client, E=Employee)
 - ESC: Cancel drawing
-- X: Delete last ROI
-- C: Clear all ROIs for current camera
+- X: Delete last ROI (Undo)
+- Z: Clear ALL ROIs for current camera
+- Right-Click: Delete specific ROI
 - S: Toggle stats panel
 - H: Toggle help panel
+- F: Toggle Fullscreen
 - D: Next camera
 - A: Previous camera
 - Q: Quit
@@ -273,7 +275,7 @@ class WorkplaceMonitor:
             cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         cv2.setMouseCallback(
             self.window_name, 
-            create_mouse_callback(self.current_camera.roi_editor)
+            self._handle_mouse
         )
         
         self.running = True
@@ -584,7 +586,7 @@ class WorkplaceMonitor:
         # Update mouse callback
         cv2.setMouseCallback(
             self.window_name,
-            create_mouse_callback(self.current_camera.roi_editor)
+            self._handle_mouse
         )
     
     def _switch_camera(self, delta: int):
@@ -597,7 +599,7 @@ class WorkplaceMonitor:
         # Update mouse callback for new camera's ROI editor
         cv2.setMouseCallback(
             self.window_name,
-            create_mouse_callback(self.current_camera.roi_editor)
+            self._handle_mouse
         )
         
         print(f"👀 Viewing: {self.current_camera.config.name} (auto-cycle paused 30s)")
@@ -703,8 +705,40 @@ class WorkplaceMonitor:
             if len(self.cameras) > 1:
                 self._switch_camera(-1)
 
-        # Removed: N/P keys (replaced by A/D)
-        # Removed: Auto-cycle toggle (A was used for this)
+        elif key == ord('c') or key == ord('C'):
+            # Check if waiting for zone type
+            if hasattr(self, '_waiting_zone_type') and self._waiting_zone_type:
+                # Client zone - need to link to employee
+                employees = db.get_all_employees()
+                if employees:
+                    print("👤 Выберите сотрудника (1-9, 0=10):")
+                    for i, emp in enumerate(employees[:10]):
+                        key_hint = 0 if i == 9 else i + 1  # 1-9 for first 9, 0 for 10th
+                        print(f"   {key_hint}: {emp['name']}")
+                    self._waiting_employee_link = True
+                    self._waiting_zone_type = False  # Important: switch state to prevent conflicts
+                else:
+                    print("⚠️ Сотрудники не найдены в БД. Создаём зону без привязки.")
+                    self._save_roi_with_type("client", linked_employee_id=None)
+        
+        elif key == ord('z') or key == ord('Z'):
+             # Clear all ROIs for current camera (moved from C)
+            camera.roi_manager.delete_all_rois()
+            print("🧹 All ROIs cleared for current camera")
+        
+        elif key == ord('s') or key == ord('S'):
+            self.show_stats = not self.show_stats
+        
+        elif key == ord('h') or key == ord('H'):
+            self.show_help = not self.show_help
+        
+        elif key == ord('f') or key == ord('F'):
+            # Toggle fullscreen
+            self.is_fullscreen = not self.is_fullscreen
+            if self.is_fullscreen:
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            else:
+                cv2.setWindowProperty(self.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
     
     def _save_roi_with_type(self, zone_type: str, linked_employee_id: int = None):
         """Save ROI with specified zone type"""
@@ -724,6 +758,24 @@ class WorkplaceMonitor:
         self._save_roi_with_type("client", linked_employee_id=employee_id)
         self._waiting_employee_link = False
         print(f"✅ Client zone linked to employee ID {employee_id}")
+
+    def _handle_mouse(self, event, x, y, flags, param):
+        """Handle mouse events - delegate to ROI editor or handle deletion"""
+        camera = self.current_camera
+        
+        # Priority 1: Drawing mode
+        if camera.roi_editor.is_drawing:
+            camera.roi_editor.handle_mouse(event, x, y, flags, param)
+            return
+
+        # Priority 2: Right Click -> Delete ROI under cursor
+        if event == cv2.EVENT_RBUTTONDOWN:
+            roi = camera.roi_manager.get_roi_at_point(x, y)
+            if roi:
+                camera.roi_manager.delete_roi(roi.id)
+                print(f"🗑️ Deleted ROI '{roi.name}'")
+            else:
+                print("ℹ️ No ROI under cursor to delete")
 
 
 def main():

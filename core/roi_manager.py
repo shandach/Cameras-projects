@@ -446,3 +446,11 @@ class ROIManager:
             self._save_to_json()  # Backup after import
         
         return imported
+
+    def get_roi_at_point(self, x: int, y: int) -> Optional[ROI]:
+        """Get ROI containing the point (x, y)"""
+        # Check in reverse order (topmost first)
+        for roi in sorted(self.rois.values(), key=lambda r: r.id, reverse=True):
+            if roi.contains_point((x, y)):
+                return roi
+        return None
