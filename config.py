@@ -89,22 +89,22 @@ def load_cameras_from_env() -> List[CameraConfig]:
 
 ROI_TEMPLATES = {
     1: {
-        "ref_res": (2560, 1440),
+        "ref_res": (1920, 1080),
         "rois": [
-            [(50, 650), (250, 400), (460, 492), (244, 682)],
-            [(306, 732), (508, 518), (674, 620), (430, 808)],
-            [(546, 858), (770, 606), (906, 710), (732, 980)],
-            [(1540, 452), (1318, 566), (1512, 1006), (1740, 802)],
-            [(1844, 624), (1554, 414), (1676, 294), (1900, 486)],
-            [(1720, 286), (1812, 190), (2010, 358), (1900, 420)],
+            [(38, 488), (188, 300), (345, 369), (183, 512)],
+            [(230, 549), (381, 389), (506, 465), (323, 606)],
+            [(410, 644), (578, 455), (680, 533), (549, 735)],
+            [(1155, 339), (989, 425), (1134, 755), (1305, 602)],
+            [(1383, 468), (1166, 311), (1257, 221), (1425, 365)],
+            [(1290, 215), (1359, 143), (1508, 269), (1425, 315)],
         ]
     },
     6: {
-        "ref_res": (2560, 1440),
+        "ref_res": (1920, 1080),
         "rois": [
-            [(422, 548), (640, 336), (788, 484), (508, 654)],
-            [(604, 742), (896, 506), (1148, 692), (788, 932)],
-            [(916, 1040), (1246, 756), (1584, 984), (1214, 1334)],
+            [(317, 411), (480, 252), (591, 363), (381, 491)],
+            [(453, 557), (672, 380), (861, 519), (591, 699)],
+            [(687, 780), (935, 567), (1188, 738), (911, 1001)],
         ]
     },
     7: {
@@ -162,7 +162,7 @@ if not CAMERAS:
 
 # Detection settings
 YOLO_MODEL = os.getenv("YOLO_MODEL", "yolov8n.pt")
-DETECTION_CONFIDENCE = float(os.getenv("DETECTION_CONFIDENCE", "0.25"))
+DETECTION_CONFIDENCE = float(os.getenv("DETECTION_CONFIDENCE", "0.35"))
 PERSON_CLASS_ID = 0  # COCO class 0 = person
 
 # Occupancy Engine settings (in seconds)
@@ -193,8 +193,8 @@ FONT_SCALE = 0.6
 LINE_THICKNESS = 2
 
 # Frame settings
-FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "2560"))
-FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "1440"))
+FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "1920"))
+FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "1080"))
 
 
 def print_config():
