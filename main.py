@@ -466,9 +466,14 @@ class WorkplaceMonitor:
                         employee_present = True
                         break
             
-            # If employee is NOT present → skip client tracking entirely
-            if not employee_present:
-                # Reset any active tracking for this zone
+            # If employee is NOT present AND no active client session → skip
+            # But if a client is already being tracked (session started while employee was here),
+            # let it continue until the client leaves.
+            has_active_session = (zone_key in self.client_tracking and 
+                                 self.client_tracking[zone_key].get('active_client') is not None)
+            
+            if not employee_present and not has_active_session:
+                # No employee, no active session → block new tracking
                 if zone_key in self.client_tracking:
                     self.client_tracking[zone_key] = {
                         'active_client': None,
