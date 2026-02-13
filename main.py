@@ -280,6 +280,10 @@ class WorkplaceMonitor:
         
         self.running = True
         self.last_cycle_time = time.time()
+        
+        # Set initial camera to one with ROIs
+        self._set_initial_camera()
+        
         print("\n Monitoring started! Press 'H' for help, 'Q' to quit\n")
         
         try:
@@ -617,8 +621,21 @@ class WorkplaceMonitor:
         )
     
     def _switch_camera(self, delta: int):
-        """Switch to another camera (view only) — pauses auto-cycle"""
-        self.current_camera_idx = (self.current_camera_idx + delta) % len(self.cameras)
+        """Switch to another camera (view only) — skips cameras without ROIs"""
+        viewable = self._get_viewable_indices()
+        if not viewable:
+            print("⚠️ No cameras with ROI zones to display")
+            return
+        
+        # Find current position in viewable list
+        try:
+            pos = viewable.index(self.current_camera_idx)
+        except ValueError:
+            pos = 0
+        
+        # Move to next/prev in viewable list
+        pos = (pos + delta) % len(viewable)
+        self.current_camera_idx = viewable[pos]
         
         # Pause auto-cycle for 30 seconds
         self.auto_cycle_paused_until = time.time() + AUTO_CYCLE_PAUSE_DURATION
@@ -629,7 +646,21 @@ class WorkplaceMonitor:
             self._handle_mouse
         )
         
-        print(f"👀 Viewing: {self.current_camera.config.name} (auto-cycle paused 30s)")
+        print(f"👀 Viewing: {self.current_camera.config.name} ({len(viewable)} cameras with ROIs)")
+    
+    def _get_viewable_indices(self):
+        """Get indices of cameras that have ROI zones"""
+        return [i for i, cam in enumerate(self.cameras) 
+                if len(cam.roi_manager.get_all_rois()) > 0]
+    
+    def _set_initial_camera(self):
+        """Set initial camera to first one with ROIs"""
+        viewable = self._get_viewable_indices()
+        if viewable:
+            self.current_camera_idx = viewable[0]
+            print(f"📷 Initial view: {self.current_camera.config.name} ({len(viewable)} cameras with ROIs)")
+        else:
+            print("⚠️ No cameras have ROI zones. Draw ROIs to start monitoring.")
     
     def _import_predefined_rois(self):
         """Import pre-defined ROIs from config for cameras that have them"""
