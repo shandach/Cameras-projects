@@ -182,7 +182,6 @@ class CameraMonitor:
             "Occupied": occupied,
             "Vacant": len(rois) - occupied,
             "Total Time": format_duration(total_time)
-            "Total Time": format_duration(total_time)
         }
         
     def shutdown(self):
