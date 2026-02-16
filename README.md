@@ -107,3 +107,5 @@ workplace-monitoring/
 Система готова к расширению:
 - Добавляйте камеры в `.env` (CAMERA_3, CAMERA_4, ...)
 - Для 500+ камер рекомендуется PostgreSQL
+
+curl -L -o yolov8n_head.pt "https://github.com/Abcfsa/YOLOv8_head_detector/raw/main/nano.pt"

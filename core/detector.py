@@ -238,16 +238,18 @@ class HeadDetector:
         
         print("🧠 Loading YOLO Head detector (SCUT-HEAD)...")
         
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(
-                f"Head detection model not found: {model_path}\n"
-                "Download from: https://github.com/Abcfsa/YOLOv8_head_detector"
-            )
-        
-        self.model = YOLO(model_path)
-        self.confidence = 0.30  # Head detection confidence (can be lower — heads are distinct)
-        
-        print("✅ YOLO Head detector loaded")
+        try:
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Head detection model not found: {model_path}")
+            
+            self.model = YOLO(model_path)
+            self.confidence = 0.30  # Head detection confidence (can be lower — heads are distinct)
+            print("✅ YOLO Head detector loaded")
+            
+        except Exception as e:
+            print(f"⚠️ Warning: Could not load head detector: {e}")
+            print("   Running without backup head detection.")
+            self.model = None
     
     def detect(self, frame: np.ndarray) -> List[Tuple[int, int]]:
         """
@@ -259,6 +261,9 @@ class HeadDetector:
         Returns:
             List of (x, y) center points for each detected head
         """
+        if self.model is None:
+            return []
+            
         results = self.model(
             frame,
             conf=self.confidence,
@@ -292,6 +297,9 @@ class HeadDetector:
         Returns:
             List of Detection objects
         """
+        if self.model is None:
+            return []
+            
         results = self.model(
             frame,
             conf=self.confidence,
