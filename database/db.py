@@ -32,6 +32,13 @@ class Database:
         # Create tables
         Base.metadata.create_all(self.engine)
         
+        # Auto-migrate: check for new columns
+        from database.migrator import update_schema
+        try:
+            update_schema(self.engine, Base)
+        except Exception as e:
+            print(f"[WARN] Auto-migration failed: {e}")
+        
         # Session factory
         self.SessionLocal = sessionmaker(bind=self.engine)
     
