@@ -82,6 +82,7 @@ class Session(Base):
     end_time = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, default=0.0)
     session_date = Column(Date, default=date.today)
+    is_synced = Column(Integer, default=0)  # 0=False, 1=True
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -89,7 +90,7 @@ class Session(Base):
     employee = relationship("Employee")
     
     def __repr__(self):
-        return f"<Session(id={self.id}, place_id={self.place_id}, employee_id={self.employee_id}, duration={self.duration_seconds}s)>"
+        return f"<Session(id={self.id}, place_id={self.place_id}, duration={self.duration_seconds}s, synced={self.is_synced})>"
 
 
 class ClientVisit(Base):
@@ -104,6 +105,7 @@ class ClientVisit(Base):
     enter_time = Column(DateTime, nullable=False)
     exit_time = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, default=0.0)
+    is_synced = Column(Integer, default=0)  # 0=False, 1=True
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -111,5 +113,5 @@ class ClientVisit(Base):
     employee = relationship("Employee", back_populates="client_visits")
     
     def __repr__(self):
-        return f"<ClientVisit(id={self.id}, employee_id={self.employee_id}, track_id={self.track_id}, duration={self.duration_seconds}s)>"
+        return f"<ClientVisit(id={self.id}, track_id={self.track_id}, synced={self.is_synced})>"
 

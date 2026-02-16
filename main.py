@@ -38,6 +38,7 @@ from core.stream_handler import StreamHandler
 from core.detector import PersonDetector, HeadDetector, TrackingDetector
 from core.roi_manager import ROIManager
 from core.occupancy_engine import OccupancyEngine
+from core.sync_service import sync_service
 from gui.roi_editor import ROIEditor, create_mouse_callback
 from gui.display import draw_timer_overlay, draw_stats_panel, draw_help_panel, format_duration, draw_employee_stats_overlay
 from database.db import db
@@ -181,7 +182,15 @@ class CameraMonitor:
             "Occupied": occupied,
             "Vacant": len(rois) - occupied,
             "Total Time": format_duration(total_time)
+            "Total Time": format_duration(total_time)
         }
+        
+    def shutdown(self):
+        """Shutdown monitor resources"""
+        # Save any active sessions
+        self.occupancy_engine.shutdown()
+        # Stop stream
+        self.disconnect()
 
 
 class WorkplaceMonitor:
@@ -252,6 +261,9 @@ class WorkplaceMonitor:
     
     def run(self):
         """Main application loop"""
+        # Start Sync Service (Background)
+        sync_service.start()
+
         # Connect ONLY cameras that have ROI zones (Lazy Connection)
         connected_count = 0
         print("[INFO] Connecting cameras with ROI zones...")
@@ -416,8 +428,12 @@ class WorkplaceMonitor:
             print("\n[WARN] Interrupted by user")
         
         finally:
+            print("\n[INFO] Shutting down application...")
+            # Stop Sync Service
+            sync_service.stop()
+            
             for camera in self.cameras:
-                camera.disconnect()
+                camera.shutdown()
             cv2.destroyAllWindows()
             print(" Monitoring stopped")
     

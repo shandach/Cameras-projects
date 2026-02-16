@@ -326,6 +326,7 @@ class Database:
                 'total_service_time': total_time
             }
     
+
     def get_client_stats_for_place(self, place_id: int, target_date: date) -> dict:
         """Get client statistics for a place on a specific date"""
         from sqlalchemy import func
@@ -346,6 +347,63 @@ class Database:
                 'client_count': client_count,
                 'total_service_time': total_time
             }
+
+    # ============ Sync Operations ============
+
+    def get_unsynced_sessions(self, limit: int = 50) -> List[dict]:
+        """Get sessions pending synchronization"""
+        with self.get_session() as session:
+            records = session.query(Session).filter(
+                Session.is_synced == 0
+            ).limit(limit).all()
+            
+            return [
+                {
+                    "id": r.id,
+                    "place_id": r.place_id,
+                    "employee_id": r.employee_id,
+                    "start_time": r.start_time.isoformat(),
+                    "end_time": r.end_time.isoformat() if r.end_time else None,
+                    "duration_seconds": r.duration_seconds,
+                    "type": "session"
+                }
+                for r in records
+            ]
+
+    def get_unsynced_client_visits(self, limit: int = 50) -> List[dict]:
+        """Get client visits pending synchronization"""
+        with self.get_session() as session:
+            records = session.query(ClientVisit).filter(
+                ClientVisit.is_synced == 0
+            ).limit(limit).all()
+            
+            return [
+                {
+                    "id": r.id,
+                    "place_id": r.place_id,
+                    "employee_id": r.employee_id,
+                    "track_id": r.track_id,
+                    "enter_time": r.enter_time.isoformat(),
+                    "exit_time": r.exit_time.isoformat() if r.exit_time else None,
+                    "duration_seconds": r.duration_seconds,
+                    "type": "client_visit"
+                }
+                for r in records
+            ]
+
+    def mark_as_synced(self, table_type: str, record_ids: List[int]):
+        """Mark records as synced"""
+        if not record_ids:
+            return
+            
+        model = Session if table_type == "session" else ClientVisit
+        
+        with self.get_session() as session:
+            session.query(model).filter(
+                model.id.in_(record_ids)
+            ).update({"is_synced": 1}, synchronize_session=False)
+            session.commit()
+
 
     def seed_employees_from_config(self, workplace_owners: dict):
         """

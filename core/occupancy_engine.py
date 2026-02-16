@@ -230,6 +230,47 @@ class OccupancyEngine:
         tracker = self.get_or_create_tracker(zone_id)
         return tracker.state != ZoneState.VACANT
 
+    def force_save_session(self, tracker: ZoneTracker):
+        """Force save current session state (e.g., on shutdown)"""
+        # Calculate time up to NOW
+        current_time = time.time()
+        
+        # If timer was running, add up the time
+        if tracker.timer_start_time:
+            tracker.accumulated_time += (current_time - tracker.timer_start_time)
+            tracker.timer_start_time = None # Stop timer
+            
+        duration = tracker.accumulated_time
+        
+        # Only save if there's a valid session start and some duration
+        if tracker.session_start and duration > 1.0: # Filter noise < 1s
+            print(f"💾 Saving active session on shutdown (Zone {tracker.zone_id})...")
+            try:
+                # Look up employee
+                employee = db.get_employee_by_place(tracker.zone_id)
+                employee_id = employee['id'] if employee else None
+                
+                db.save_session(
+                    place_id=tracker.zone_id,
+                    start_time=tracker.session_start,
+                    end_time=datetime.now(),
+                    duration_seconds=duration,
+                    employee_id=employee_id
+                )
+                print(f"✅ Saved active session: {duration:.1f}s")
+            except Exception as e:
+                print(f"⚠️ Failed to save shutdown session: {e}")
+                
+    def shutdown(self):
+        """Gracefully shut down engine and save all active sessions"""
+        print("\n🛑 OccupancyEngine shutting down...")
+        saved_count = 0
+        for zone_id, tracker in self.trackers.items():
+            if tracker.state in [ZoneState.OCCUPIED, ZoneState.CHECKING_EXIT]:
+                self.force_save_session(tracker)
+                saved_count += 1
+        print(f"🏁 OccupancyEngine shutdown complete. Saved {saved_count} active sessions.")
+
 
 if __name__ == "__main__":
     # Test Occupancy Engine
