@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import List, Dict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+from datetime import datetime
 from database.db import db
 from config import BASE_DIR
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 # --- Synchronization Configuration ---
 # You should configure these URLs in your .env or backend code
@@ -115,16 +118,32 @@ class CloudSyncService:
         except Exception:
             print("[ERROR] [Status] Failed to send status report")
 
+    # --- Cloud Connection ---
+    def _get_cloud_session(self):
+        """Create a session to the cloud DB"""
+        if self.mock_mode:
+            return None
+        try:
+            # Lazy init engine
+            if not hasattr(self, 'cloud_engine'):
+                # Ensure DSN is valid
+                dsn = os.getenv("DB_DSN")
+                if not dsn:
+                    return None
+                if dsn.startswith("postgres://"):
+                    dsn = dsn.replace("postgres://", "postgresql://", 1)
+                
+                self.cloud_engine = create_engine(dsn, pool_pre_ping=True)
+                self.CloudSession = sessionmaker(bind=self.cloud_engine)
+            
+            return self.CloudSession()
+        except Exception as e:
+            print(f"[ERROR] [Sync] Failed to connect to cloud: {e}")
+            return None
+
     def _sync_data(self):
-        """Upload pending records from DB (with Turbo Mode for backlog)"""
-        # If we have a lot of data (e.g. after internet outage), we want to
-        # upload it AS FAST AS POSSIBLE, without waiting 10s between batches.
-        # So we loop until:
-        # 1. No more data to sync
-        # 2. Upload fails (internet lost again)
-        # 3. We hit a safety limit (to not block thread deeply forever)
-        
-        max_batches_per_cycle = 20 # Up to 1000 records per cycle (20 * 50)
+        """Upload pending records from DB (Direct to Cloud DB)"""
+        max_batches_per_cycle = 20 
         batches_processed = 0
         
         while batches_processed < max_batches_per_cycle:
@@ -132,80 +151,94 @@ class CloudSyncService:
             data_found = False
             
             # 1. Sync Sessions
-            sessions = db.get_unsynced_sessions(limit=BATCH_SIZE)
-            if sessions:
+            sessions_data = db.get_unsynced_sessions(limit=BATCH_SIZE)
+            if sessions_data:
                 data_found = True
-                if self._upload_batch("sessions", sessions):
-                    ids = [r['id'] for r in sessions]
+                if self._upload_to_cloud_db("session", sessions_data):
+                    ids = [r['id'] for r in sessions_data]
                     db.mark_as_synced("session", ids)
-                    print(f"[INFO] [Sync] Uploaded {len(sessions)} sessions (Batch {batches_processed+1})")
+                    print(f"[INFO] [Sync] Uploaded {len(sessions_data)} sessions (Batch {batches_processed+1})")
                     has_success = True
                 else:
-                    # Upload failed, break loop and retry later
                     break
             
             # 2. Sync Client Visits
-            visits = db.get_unsynced_client_visits(limit=BATCH_SIZE)
-            if visits:
+            visits_data = db.get_unsynced_client_visits(limit=BATCH_SIZE)
+            if visits_data:
                 data_found = True
-                if self._upload_batch("client_visits", visits):
-                    ids = [r['id'] for r in visits]
+                if self._upload_to_cloud_db("client_visit", visits_data):
+                    ids = [r['id'] for r in visits_data]
                     db.mark_as_synced("client_visit", ids)
-                    print(f"[INFO] [Sync] Uploaded {len(visits)} client visits (Batch {batches_processed+1})")
+                    print(f"[INFO] [Sync] Uploaded {len(visits_data)} client visits (Batch {batches_processed+1})")
                     has_success = True
                 else:
-                    # Upload failed
                     break
                     
-            # Update last success time if we uploaded something OR if we had nothing to upload
             if has_success:
                 self.last_successful_upload_time = time.time()
                 batches_processed += 1
             elif not data_found:
-                # Queue is empty! We are fully synced.
                 self.last_successful_upload_time = time.time()
-                break # Exit loop, sleep and wait for new data
+                break 
             else:
-                # Data found but upload failed
                 break
 
-    def _upload_batch(self, data_type: str, records: List[Dict]) -> bool:
-        """Helper to upload a batch of data"""
+    def _upload_to_cloud_db(self, data_type: str, records: List[Dict]) -> bool:
+        """Push records directly to Cloud PostgreSQL"""
         if self.mock_mode:
-            # Simulate upload delay and success
-            # print(f"☁️ [Sync-Mock] Would upload {len(records)} {data_type}...")
-            # For testing: we pretend it succeeded ONLY if we wanted to test logic. 
-            # But user wants REAL reliability. 
-            # So I will return False here by default to NOT mark them as synced 
-            # unless user configures real URL. 
-            # Wait, if I return False, the DB grows forever in 'is_synced=0'. 
-            # For demonstration, better to print "Would upload" and return True 
-            # OR ask user for URL.
-            # Let's return True to simulate success for the Pilot phase, 
-            # ensuring 'is_synced' logic works in DB.
-            return True 
+            return True
 
-        payload = {
-            "branch_id": BRANCH_ID,
-            "type": data_type,
-            "data": records
-        }
-        
-        try:
-            response = requests.post(
-                f"{CLOUD_API_BASE}/sync/{data_type}",
-                json=payload,
-                timeout=10,
-                headers={"Authorization": f"Bearer {AUTH_TOKEN}"}
-            )
-            if response.status_code in [200, 201]:
-                return True
-            else:
-                print(f"[WARN] [Sync] Upload failed config: {response.status_code}")
-                return False
-        except Exception as e:
-            print(f"[ERROR] [Sync] Connection error: {e}")
+        cloud_session = self._get_cloud_session()
+        if not cloud_session:
             return False
+            
+        try:
+            # We must import models inside here or at top level if not circular
+            # To be safe, we import inside
+            from database.models import Session as SessionModel, ClientVisit as VisitModel
+            
+            with cloud_session:
+                for r in records:
+                    if data_type == "session":
+                        # Convert ISO strings back to datetime if necessary, 
+                        # BUT get_unsynced_sessions returns ISO strings.
+                        # We need to parse them.
+                        orm_obj = SessionModel(
+                            id=r['id'], # Keep same ID
+                            place_id=r['place_id'],
+                            employee_id=r['employee_id'],
+                            start_time=datetime.fromisoformat(r['start_time']),
+                            end_time=datetime.fromisoformat(r['end_time']) if r['end_time'] else None,
+                            duration_seconds=r['duration_seconds'],
+                            session_date=datetime.fromisoformat(r['start_time']).date(),
+                            is_synced=1
+                        )
+                    elif data_type == "client_visit":
+                        orm_obj = VisitModel(
+                            id=r['id'],
+                            place_id=r['place_id'],
+                            employee_id=r['employee_id'],
+                            track_id=r['track_id'],
+                            visit_date=datetime.fromisoformat(r['enter_time']).date(),
+                            enter_time=datetime.fromisoformat(r['enter_time']),
+                            exit_time=datetime.fromisoformat(r['exit_time']) if r['exit_time'] else None,
+                            duration_seconds=r['duration_seconds'],
+                            is_synced=1
+                        )
+                    
+                    # Merge prevents error if ID exists
+                    cloud_session.merge(orm_obj)
+                
+                cloud_session.commit()
+            return True
+            
+        except Exception as e:
+            print(f"[ERROR] [Sync] Cloud DB Write Failed: {e}")
+            return False
+            
+    def _upload_batch(self, data_type: str, records: List[Dict]) -> bool:
+        """Deprecated HTTP upload (kept for interface compatibility if needed)"""
+        return self._upload_to_cloud_db(data_type, records)
 
 # Global instance
 sync_service = CloudSyncService()
