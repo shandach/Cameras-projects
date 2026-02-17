@@ -105,6 +105,9 @@ class CameraMonitor:
             # Skip detection, reuse last results (but redraw them on new frame)
             detections = self.last_detections
         
+        # Extract centers for ROI presence check
+        person_centers = [det.center for det in detections]
+        
         # Check presence in ROIs (We do this EVERY frame to keep UI responsive)
         presence = self.roi_manager.check_presence(person_centers)
         
