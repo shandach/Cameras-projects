@@ -44,8 +44,9 @@ class CloudSyncService:
         # If never migrated, assume now to avoid scary warnings initially
         self.last_successful_upload_time = time.time()
         
-        # Check if we are in "Mock Mode" (no real URL configured)
-        self.mock_mode = "localhost" in CLOUD_API_BASE
+        # Check if we are in "Mock Mode" (no real URL configured + NO DB_DSN)
+        # If DB_DSN is set, we are NOT in mock mode for data sync, even if API is localhost.
+        self.mock_mode = "localhost" in CLOUD_API_BASE and not os.getenv("DB_DSN")
         
     def start(self):
         """Start the background sync thread"""

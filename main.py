@@ -71,6 +71,12 @@ class CameraMonitor:
         self.roi_editor = ROIEditor(f"Camera {camera_config.id}")
         
         self.is_connected = False
+        
+        # CPU Optimization: Frame Skipping
+        self.frame_skip_counter = 0
+        self.SKIP_FRAMES = 2  # Process 1, Skip 2 (Effective 1/3 FPS for detection)
+        # We store the *results* of detection to redraw them on skipped frames
+        self.last_detections = []
     
     def connect(self) -> bool:
         """Connect to camera stream"""
@@ -85,19 +91,50 @@ class CameraMonitor:
     
     def process_frame(self, frame):
         """Process a single frame"""
-        # Detect persons with YOLO (primary detector)
-        detections = self.detector.detect(frame)
-        person_centers = [d.center for d in detections]
+        from core.utils import is_point_in_box
+
+        # Optimization: Frame Skipping
+        self.frame_skip_counter += 1
+        run_detection = (self.frame_skip_counter % (self.SKIP_FRAMES + 1) == 0)
         
-        # If YOLO-body didn't detect anyone, try YOLO-head (backup)
-        used_backup = False
-        if not person_centers:
-            head_centers = self.head_detector.detect(frame)
-            if head_centers:
-                person_centers = head_centers
-                used_backup = True
+        if run_detection:
+            # 1. Detect bodies (Stricter threshold from config)
+            body_detections = self.detector.detect(frame)
+            
+            # 2. Detect heads (Lower threshold for sensitivity)
+            head_detections = self.head_detector.detect_with_boxes(frame)
+            
+            # 3. Hybrid Merge Logic
+            final_detections = list(body_detections)
+            
+            # Check each head: if it's NOT inside any body box, add it as a new person
+            for head in head_detections:
+                head_center = head.center
+                is_inside_body = False
+                
+                for body in body_detections:
+                    if is_point_in_box(head_center, body.bbox):
+                        is_inside_body = True
+                        break
+                
+                if not is_inside_body:
+                    # Independent head found (e.g. sitting person obscured by chair)
+                    final_detections.append(head)
+            
+            # Save for next frames
+            self.last_detections = final_detections
+            
+        else:
+            # Skip detection, reuse last results (but redraw them on new frame)
+            final_detections = self.last_detections
+
+        # Extract centers for ROI check
+        person_centers = [d.center for d in final_detections]
+
+        # For drawing, we want to visualize what's happening
+        detections = final_detections
         
-        # Check presence in ROIs
+        # Check presence in ROIs (We do this EVERY frame to keep UI responsive)
         presence = self.roi_manager.check_presence(person_centers)
         
         # Update occupancy engine
