@@ -469,9 +469,12 @@ class WorkplaceMonitor:
         )
     
     def _process_client_zones(self, frame, camera: CameraMonitor):
-        """Process client zones with ByteTrack tracking - single client per zone"""
+        """
+        Process client zones with Zone-Based Tracking (Robust to ID changes)
+        Tracks if the ZONE is occupied, not the specific person ID.
+        """
         from datetime import datetime
-        from config import CLIENT_ENTRY_THRESHOLD
+        from config import CLIENT_ENTRY_THRESHOLD, CLIENT_EXIT_THRESHOLD
         from gui.display import format_duration
         
         # Get client zones
@@ -490,124 +493,130 @@ class WorkplaceMonitor:
         for roi in client_zones:
             zone_key = (camera_id, roi.id)
             
-            # ── Employee Presence Guard ──
-            # Check if the linked employee is at their workstation
-            employee_present = False
-            if roi.linked_employee_id:
-                for emp_roi in camera.roi_manager.get_all_rois():
-                    if (emp_roi.zone_type == "employee" and 
-                        emp_roi.employee_id == roi.linked_employee_id and
-                        emp_roi.status == "OCCUPIED"):
-                        employee_present = True
-                        break
-            
-            # If employee is NOT present AND no active client session → skip
-            # But if a client is already being tracked (session started while employee was here),
-            # let it continue until the client leaves.
-            has_active_session = (zone_key in self.client_tracking and 
-                                 self.client_tracking[zone_key].get('active_client') is not None)
-            
-            if not employee_present and not has_active_session:
-                # No employee, no active session → block new tracking
-                if zone_key in self.client_tracking:
-                    self.client_tracking[zone_key] = {
-                        'active_client': None,
-                        'clients': {}
-                    }
-                continue
-            # ── End Guard ──
-            
-            # Initialize zone state: {'active_client': track_id or None, 'clients': {track_id: data}}
+            # Initialize zone state if needed
             if zone_key not in self.client_tracking:
                 self.client_tracking[zone_key] = {
-                    'active_client': None,  # Currently tracked client
-                    'clients': {}  # All clients in zone with their data
+                    'status': 'VACANT',       # VACANT, OCCUPIED, CHECKING_EXIT
+                    'start_time': None,       # When occupancy started
+                    'last_seen_time': None,   # Last time a person was seen
+                    'active_search_id': None, # ID for DB record (best guess)
+                    'debug_msg': ""
                 }
             
             zone_state = self.client_tracking[zone_key]
             
-            # Find all clients currently in this zone with their centers
-            clients_in_zone = []
+            # ── 1. Detect Presence ──
+            # Find ANY person in this zone
+            # We don't care about specific ID for timer, just that SOMEONE is there.
+            persons_in_zone = []
             for det in detections:
                 if roi.contains_point(det.center):
-                    clients_in_zone.append({
-                        'track_id': det.track_id,
-                        'center': det.center
-                    })
-                    
-                    # Update or add client data
-                    if det.track_id not in zone_state['clients']:
-                        zone_state['clients'][det.track_id] = {
-                            'enter_time': now,
-                            'last_seen': now
-                        }
-                    else:
-                        zone_state['clients'][det.track_id]['last_seen'] = now
+                    persons_in_zone.append(det)
             
-            current_track_ids = [c['track_id'] for c in clients_in_zone]
+            is_occupied = len(persons_in_zone) > 0
             
-            # Check if active client left
-            if zone_state['active_client'] is not None:
-                if zone_state['active_client'] not in current_track_ids:
-                    # Active client left - save if >60s
-                    track_id = zone_state['active_client']
-                    if track_id in zone_state['clients']:
-                        track_data = zone_state['clients'][track_id]
-                        duration = (track_data['last_seen'] - track_data['enter_time']).total_seconds()
-                        
-                        if duration >= CLIENT_ENTRY_THRESHOLD:
-                            employee_id = roi.linked_employee_id
-                            if employee_id:
-                                db.save_client_visit(
-                                    place_id=roi.id,
-                                    employee_id=employee_id,
-                                    track_id=track_id,
-                                    enter_time=track_data['enter_time'],
-                                    exit_time=track_data['last_seen'],
-                                    duration_seconds=duration
-                                )
-                                service_time = duration - CLIENT_ENTRY_THRESHOLD
-                                print(f"✅ Client #{track_id} → emp#{employee_id}: обслуживание {int(service_time)}s")
-                        
-                        del zone_state['clients'][track_id]
-                    
-                    zone_state['active_client'] = None
+            # ── 2. Update State Machine ──
+            current_status = zone_state['status']
             
-            # Remove other clients that left (not active)
-            tracks_to_remove = [tid for tid in zone_state['clients'] 
-                               if tid not in current_track_ids and tid != zone_state['active_client']]
-            for tid in tracks_to_remove:
-                del zone_state['clients'][tid]
-            
-            # If no active client, pick the first one in zone
-            if zone_state['active_client'] is None and clients_in_zone:
-                # Pick first client (by track_id as proxy for arrival order)
-                first_client = min(clients_in_zone, key=lambda c: c['track_id'])
-                zone_state['active_client'] = first_client['track_id']
-            
-            # Draw timer for active client (only after 60s verification)
-            if zone_state['active_client'] is not None:
-                track_id = zone_state['active_client']
-                track_data = zone_state['clients'].get(track_id)
+            if is_occupied:
+                # Someone is here!
+                # Update last seen time
+                zone_state['last_seen_time'] = now
                 
-                if track_data:
-                    elapsed = (now - track_data['enter_time']).total_seconds()
+                # Update tracked ID (use first one found as representative)
+                # This is just for the DB record later
+                best_person = min(persons_in_zone, key=lambda p: p.track_id) # Stable choice
+                zone_state['active_search_id'] = best_person.track_id
+                
+                if current_status == 'VACANT':
+                    # First person entered
+                    zone_state['status'] = 'OCCUPIED'
+                    zone_state['start_time'] = now
+                    print(f"🪑 Zone {roi.id}: Client enter (ID: {best_person.track_id})")
                     
-                    pts = roi.get_polygon_array()
-                    M = cv2.moments(pts)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"] / M["m00"])
-                        cy = int(M["m01"] / M["m00"]) + 50
+                elif current_status == 'CHECKING_EXIT':
+                    # Person returned during grace period
+                    zone_state['status'] = 'OCCUPIED'
+                    print(f"🔄 Zone {roi.id}: Client returned (Grace period reset)")
+                    
+            else:
+                # No one is here
+                if current_status == 'OCCUPIED':
+                    # Just left, start checking exit
+                    zone_state['status'] = 'CHECKING_EXIT'
+                    print(f"🚪 Zone {roi.id}: Client left, checking exit ({CLIENT_EXIT_THRESHOLD}s grace)...")
+                    
+                elif current_status == 'CHECKING_EXIT':
+                    # Still gone... check threshold
+                    time_gone = (now - zone_state['last_seen_time']).total_seconds()
+                    
+                    if time_gone >= CLIENT_EXIT_THRESHOLD:
+                        # ── Session Finished ──
+                        # Calculate total duration (from start to last seen)
+                        if zone_state['start_time']:
+                            duration = (zone_state['last_seen_time'] - zone_state['start_time']).total_seconds()
+                            
+                            # Log short visits for debug
+                            print(f"⏱️ Zone {roi.id}: Session ended. Duration: {duration:.1f}s")
+                            
+                            # Only save if duration > threshold
+                            if duration >= CLIENT_ENTRY_THRESHOLD:
+                                employee_id = roi.linked_employee_id
+                                if employee_id:
+                                    track_id = zone_state['active_search_id'] or 0
+                                    db.save_client_visit(
+                                        place_id=roi.id,
+                                        employee_id=employee_id,
+                                        track_id=track_id,
+                                        enter_time=zone_state['start_time'],
+                                        exit_time=zone_state['last_seen_time'],
+                                        duration_seconds=duration
+                                    )
+                                    service_time = duration - CLIENT_ENTRY_THRESHOLD
+                                    print(f"✅ SAVED: Client → emp#{employee_id}: {int(service_time)}s (Net)")
+                            else:
+                                print(f"❌ IGNORED: Duration {duration:.1f}s < {CLIENT_ENTRY_THRESHOLD}s")
                         
-                        if elapsed >= CLIENT_ENTRY_THRESHOLD:
-                            # Show timer starting from 00:01:00
-                            display_time = elapsed  # Total time including verification
-                            time_str = format_duration(display_time)
-                            cv2.putText(
-                                frame, time_str, (cx - 40, cy),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2
-                            )
-                        # During verification (0-60s) - show nothing
+                        # Reset Zone
+                        zone_state['status'] = 'VACANT'
+                        zone_state['start_time'] = None
+                        zone_state['last_seen_time'] = None
+                        zone_state['active_search_id'] = None
+
+            # ── 3. Draw Timer ──
+            # If status is OCCUPIED or CHECKING_EXIT (grace period), show timer
+            if zone_state['status'] in ['OCCUPIED', 'CHECKING_EXIT'] and zone_state['start_time']:
+                # Calculate elapsed time from START
+                # Note: In CHECKING_EXIT, time freezes at last_seen or continues?
+                # Standard practice: Timer should show "time served", so it pauses if they leave.
+                # But for simplicity and preventing "jumping", let's show time passed since start.
+                # If they leave, the session clamps to 'last_seen', so the displayed time might be slightly ahead 
+                # of saved time during the grace period (which is fine, it's "live").
+                
+                elapsed = (now - zone_state['start_time']).total_seconds()
+                
+                pts = roi.get_polygon_array()
+                M = cv2.moments(pts)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"]) + 50
+                    
+                    if elapsed >= CLIENT_ENTRY_THRESHOLD:
+                        display_time = elapsed
+                        time_str = format_duration(display_time)
+                        
+                        # Color: Green if occupied, Yellow if checking exit (grace)
+                        color = (0, 255, 0) if zone_state['status'] == 'OCCUPIED' else (0, 255, 255)
+                        
+                        cv2.putText(
+                            frame, time_str, (cx - 40, cy),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2
+                        )
+                    else:
+                         # Debug print for user to see it's working but invisible
+                         # Only print every 5 seconds to reduce spam
+                         if int(elapsed) % 5 == 0 and int(elapsed * 10) % 10 == 0:
+                             print(f"⏳ Zone {roi.id}: {zone_state['status']} for {elapsed:.1f}s (Waiting for {CLIENT_ENTRY_THRESHOLD}s)")
         
         # Draw tracking detections on frame
         frame = self.tracking_detector.draw_detections(frame, detections)
