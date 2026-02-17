@@ -161,8 +161,8 @@ if not CAMERAS:
 
 
 # Detection settings
-YOLO_MODEL = os.getenv("YOLO_MODEL", "yolov8n.pt")
-DETECTION_CONFIDENCE = float(os.getenv("DETECTION_CONFIDENCE", "0.50"))  # Stricter to avoid chairs
+YOLO_MODEL = os.getenv("YOLO_MODEL", "yolov8s.pt")  # Switched to Small model for better accuracy
+DETECTION_CONFIDENCE = float(os.getenv("DETECTION_CONFIDENCE", "0.35"))
 PERSON_CLASS_ID = 0  # COCO class 0 = person
 
 # Occupancy Engine settings (in seconds)

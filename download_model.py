@@ -1,8 +1,8 @@
 import requests
 import os
 
-url = "https://github.com/Abcfsa/YOLOv8_head_detector/raw/main/nano.pt"
-filename = "yolov8n_head.pt"
+url = "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8s.pt"
+filename = "yolov8s.pt"
 
 print(f"Downloading {filename} from {url}...")
 

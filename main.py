@@ -35,7 +35,7 @@ from config import (CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config,
                     WORKPLACE_OWNERS, AUTO_CYCLE_INTERVAL, AUTO_CYCLE_PAUSE_DURATION,
                     FULLSCREEN_MODE)
 from core.stream_handler import StreamHandler
-from core.detector import PersonDetector, HeadDetector, TrackingDetector
+from core.detector import PersonDetector, TrackingDetector
 from core.roi_manager import ROIManager
 from core.occupancy_engine import OccupancyEngine
 from core.sync_service import sync_service
@@ -47,18 +47,17 @@ from database.db import db
 class CameraMonitor:
     """Monitor for a single camera"""
     
-    def __init__(self, camera_config, detector: PersonDetector, head_detector: HeadDetector):
+    def __init__(self, camera_config, detector: PersonDetector):
         """
         Initialize camera monitor
         
         Args:
             camera_config: CameraConfig from .env
             detector: Shared YOLOv8 body detector instance
-            head_detector: Shared YOLO head detector (fallback for rear/top view)
         """
         self.config = camera_config
         self.detector = detector
-        self.head_detector = head_detector  # Резервный детектор голов
+        # self.head_detector removed (using single YOLOv8s)
         
         # Get or create camera in database
         self.db_camera = db.get_or_create_camera(camera_config)
@@ -91,48 +90,20 @@ class CameraMonitor:
     
     def process_frame(self, frame):
         """Process a single frame"""
-        from core.utils import is_point_in_box
-
         # Optimization: Frame Skipping
         self.frame_skip_counter += 1
         run_detection = (self.frame_skip_counter % (self.SKIP_FRAMES + 1) == 0)
         
         if run_detection:
-            # 1. Detect bodies (Stricter threshold from config)
-            body_detections = self.detector.detect(frame)
-            
-            # 2. Detect heads (Lower threshold for sensitivity)
-            head_detections = self.head_detector.detect_with_boxes(frame)
-            
-            # 3. Hybrid Merge Logic
-            final_detections = list(body_detections)
-            
-            # Check each head: if it's NOT inside any body box, add it as a new person
-            for head in head_detections:
-                head_center = head.center
-                is_inside_body = False
-                
-                for body in body_detections:
-                    if is_point_in_box(head_center, body.bbox):
-                        is_inside_body = True
-                        break
-                
-                if not is_inside_body:
-                    # Independent head found (e.g. sitting person obscured by chair)
-                    final_detections.append(head)
+            # 1. Detect persons (Single YOLOv8s model)
+            detections = self.detector.detect(frame)
             
             # Save for next frames
-            self.last_detections = final_detections
+            self.last_detections = detections
             
         else:
             # Skip detection, reuse last results (but redraw them on new frame)
-            final_detections = self.last_detections
-
-        # Extract centers for ROI check
-        person_centers = [d.center for d in final_detections]
-
-        # For drawing, we want to visualize what's happening
-        detections = final_detections
+            detections = self.last_detections
         
         # Check presence in ROIs (We do this EVERY frame to keep UI responsive)
         presence = self.roi_manager.check_presence(person_centers)
@@ -253,8 +224,8 @@ class WorkplaceMonitor:
         print("[INFO] Loading ByteTrack tracker...")
         self.tracking_detector = TrackingDetector()
         
-        # Shared backup detector (YOLO Head for when body detection fails)
-        self.head_detector = HeadDetector()
+        # Shared backup detector removed (using single YOLOv8s)
+        # self.head_detector = HeadDetector()
         
         # Client tracking state: {(camera_id, roi_id): {track_id: {'enter_time': datetime, 'last_seen': datetime}}}
         self.client_tracking = {}
@@ -262,7 +233,7 @@ class WorkplaceMonitor:
         # Create camera monitors
         self.cameras: list[CameraMonitor] = []
         for cam_config in CAMERAS:
-            monitor = CameraMonitor(cam_config, self.detector, self.head_detector)
+            monitor = CameraMonitor(cam_config, self.detector)
             self.cameras.append(monitor)
             print(f"[CAM] Camera {cam_config.id}: {cam_config.name}")
         
