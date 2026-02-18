@@ -632,6 +632,8 @@ class WorkplaceMonitor:
             if rois:
                 camera.roi_manager.delete_roi(rois[-1].id)
                 print("🗑️ ROI deleted")
+            else:
+                 print("ℹ️ No ROIs to delete")
         
         elif key == ord('d') or key == ord('D'):
              # Next camera (manual)
@@ -658,7 +660,46 @@ class WorkplaceMonitor:
                 else:
                     print("⚠️ Сотрудники не найдены в БД. Создаём зону без привязки.")
                     self._save_roi_with_type("client", linked_employee_id=None)
-        
+
+        elif key == ord('l') or key == ord('L'):
+            # Link LAST Client Zone to next Employee (Cycle)
+            rois = camera.roi_manager.get_all_rois()
+            if rois:
+                # Target the last zone (simplified selection)
+                target_roi = rois[-1]
+                
+                if target_roi.zone_type == 'client':
+                    # Get available employees
+                    emp_ids = sorted(list(WORKPLACE_OWNERS.keys()))
+                    if not emp_ids:
+                        print("⚠️ No employees configured in WORKPLACE_OWNERS!")
+                    else:
+                        current_id = target_roi.linked_employee_id
+                        
+                        # Calculate next ID
+                        if current_id is None:
+                            new_id = emp_ids[0]
+                        else:
+                            try:
+                                idx = emp_ids.index(current_id)
+                                new_id = emp_ids[(idx + 1) % len(emp_ids)]
+                            except ValueError:
+                                new_id = emp_ids[0]
+                        
+                        # Update Memory
+                        target_roi.linked_employee_id = new_id
+                        
+                        # Update DB
+                        db.update_roi_link(target_roi.id, new_id)
+                        
+                        # Update JSON
+                        camera.roi_manager._save_to_json()
+                        
+                        emp_name = WORKPLACE_OWNERS.get(new_id, "Unknown")
+                        print(f"🔗 Zone '{target_roi.name}' linked to {emp_name} (ID: {new_id})")
+                else:
+                    print("⚠️ Can only link CLIENT zones (Select a client zone first or draw one)")
+                
         elif key == ord('z') or key == ord('Z'):
              # Clear all ROIs for current camera (moved from C)
             camera.roi_manager.delete_all_rois()
@@ -718,8 +759,10 @@ class WorkplaceMonitor:
 
         # Priority 2: Right Click -> Delete ROI under cursor
         if event == cv2.EVENT_RBUTTONDOWN:
+            print(f"🖱️ Right Click at ({x}, {y})")
             roi = camera.roi_manager.get_roi_at_point(x, y)
             if roi:
+                print(f"   Found ROI: {roi.name} (ID: {roi.id})")
                 camera.roi_manager.delete_roi(roi.id)
                 print(f"🗑️ Deleted ROI '{roi.name}'")
             else:
