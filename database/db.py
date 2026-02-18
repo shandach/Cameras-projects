@@ -169,6 +169,15 @@ class Database:
             session.commit()
             return count
     
+    def update_roi_type(self, place_id: int, zone_type: str):
+        """Update the zone type of a place"""
+        with self.get_session() as session:
+            place = session.query(Place).filter(Place.id == place_id).first()
+            if place:
+                place.zone_type = zone_type
+                session.commit()
+
+    
     # ============ Session Operations ============
     
     def save_session(self, place_id: int, start_time: datetime, 
