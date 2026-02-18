@@ -33,7 +33,7 @@ def check_database():
             for r in rois:
                 print(f"   - ID {r.id}: '{r.name}' (Cam {r.camera_id}, Type: {r.zone_type})")
         else:
-            print("   ⚠️ No ROI zones found! You may need to run roizones.py or main.py to create them.")
+            print("   ⚠️ No ROI zones found! You may need to run main.py and draw them using 'R' key.")
 
         # 2. Count Sessions & Visits
         session_count = session.query(Session).count()

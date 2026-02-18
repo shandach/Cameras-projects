@@ -450,8 +450,7 @@ class WorkplaceMonitor:
             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
         )
         
-        # Draw tracking detections on frame
-        frame = self.tracking_detector.draw_detections(frame, detections)
+
         
         return frame
     

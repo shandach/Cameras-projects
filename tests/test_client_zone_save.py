@@ -15,7 +15,7 @@ def test_client_zone_persistence():
     print("🧪 Testing Client Zone Persistence...")
     
     # 1. Setup Wrapper
-    # We need to simulate the roizones.py logic
+    # We need to simulate the ROI Editor logic
     # Create a manager for a test camera
     CAM_ID = 999
     manager = ROIManager(CAM_ID)
@@ -30,18 +30,18 @@ def test_client_zone_persistence():
     roi_id = roi.id
     print(f"   Created Zone ID {roi_id} as 'employee'")
     
-    # 3. Simulate Toggle to Client (The Buggy Logic from roizones.py)
+    # 3. Simulate Toggle to Client (Simulating UI Logic)
     print("   Simulating 'C' key toggle...")
     new_type = "client"
     
-    # A. Update DB (References logic in roizones.py:352)
+    # A. Update DB
     db.update_roi_type(roi_id, new_type)
     
     # B. Update In-Memory Object
     roi.zone_type = new_type
     
     # C. STEP ADDED: manager._save_to_json() 
-    # This mimics the FIX we just added to roizones.py
+    # This mimics the fix ensured in ROI Manager
     manager._save_to_json()
     
     print(f"   Switched Zone ID {roi_id} to 'client' (DB Updated, JSON Stale)")

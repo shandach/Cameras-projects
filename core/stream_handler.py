@@ -145,6 +145,8 @@ class StreamHandler:
             return True, self.latest_frame.copy()
 
     def get_frame_size(self) -> tuple:
+        if self.cap is None or not self.cap.isOpened():
+             return (0, 0)
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         return (width, height)
