@@ -210,7 +210,7 @@ class GridView:
             "J: Toggle Grid View",
             "A/D: Switch Camera",
             "R: Draw | RtClick: Del",
-            "C: Change Zone Type",
+            "C: Change Type | L: Link Emp",
             "S: Save (Auto-sync)"
         ]
         for hint in hints:
@@ -352,6 +352,81 @@ class ROIDemoApp:
                      db.update_roi_type(r.id, new_type) # Assuming this method exists
                  r.zone_type = new_type
                  print(f"Zone switched to {new_type}")
+
+        # Quick Links 1-9, 0 (ID 10)
+        elif key >= ord('0') and key <= ord('9'):
+             rois = cam.roi_manager.get_all_rois()
+             if rois and rois[-1].zone_type == 'client':
+                 r = rois[-1]
+                 # '1' -> 1, '0' -> 10
+                 target_id = int(chr(key))
+                 if target_id == 0: target_id = 10
+                 
+                 # Check if this employee ID exists
+                 if target_id in WORKPLACE_OWNERS:
+                     r.linked_employee_id = target_id
+                     
+                     # Update DB
+                     if not cam.is_sandbox:
+                         try:
+                             db.update_roi_link(r.id, target_id)
+                         except:
+                             pass
+                     cam.roi_manager._save_to_json()
+                     print(f"🔗 Zone {r.id} linked to {WORKPLACE_OWNERS[target_id]} (ID: {target_id}) via Key")
+                 else:
+                     print(f"⚠️ Employee ID {target_id} not configured!")
+
+
+        elif key == ord('l'):
+             # Link Client Zone to Employee
+             rois = cam.roi_manager.get_all_rois()
+             if rois:
+                 # Find ROI under cursor (if any) - simplified: use last added or active
+                 # Better: Use mouse position stored in app (need to track it)
+                 # Fallback: modify LAST ROI for now, or add mouse tracking
+                 r = rois[-1]
+                 
+                 if r.zone_type == 'client':
+                     # Cycle through available employees
+                     # Get list of employee IDs
+                     emp_ids = sorted(list(WORKPLACE_OWNERS.keys()))
+                     if not emp_ids:
+                         print("No employees configured in WORKPLACE_OWNERS!")
+                         return
+                         
+                     current_id = r.linked_employee_id
+                     
+                     if current_id is None:
+                         new_id = emp_ids[0]
+                     else:
+                         try:
+                             idx = emp_ids.index(current_id)
+                             new_id = emp_ids[(idx + 1) % len(emp_ids)]
+                         except ValueError:
+                             new_id = emp_ids[0]
+                             
+                     r.linked_employee_id = new_id
+                     
+                     # Update DB
+                     if not cam.is_sandbox:
+                         # We need a method to update linked_employee_id in DB
+                         # roi_manager doesn't have it explicitly, but we can access db directly
+                         # or add a method. Let's add it to db.py first? 
+                         # Actually, let's just use a direct update call if possible or add method.
+                         # For now, let's assume we added update_roi_link to db.py
+                         try:
+                             db.update_roi_link(r.id, new_id)
+                         except AttributeError:
+                             print("Method update_roi_link not found in DB! Please add it.")
+                             
+                     # Update JSON
+                     cam.roi_manager._save_to_json()
+                     
+                     emp_name = WORKPLACE_OWNERS.get(new_id, "Unknown")
+                     print(f"🔗 Zone {r.id} linked to {emp_name} (ID: {new_id})")
+                 else:
+                     print("⚠️ Can only link CLIENT zones.")
 
         elif key == ord('z'):
             if not self.grid_view:

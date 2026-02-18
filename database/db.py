@@ -177,6 +177,13 @@ class Database:
                 place.zone_type = zone_type
                 session.commit()
 
+    def update_roi_link(self, place_id: int, linked_employee_id: int):
+        """Update the linked employee for a client zone"""
+        with self.get_session() as session:
+            place = session.query(Place).filter(Place.id == place_id).first()
+            if place:
+                place.linked_employee_id = linked_employee_id
+                session.commit()
     
     # ============ Session Operations ============
     

@@ -71,12 +71,56 @@ def test_client_visit_recording():
     assert stats['client_count'] == 1, "Client count should be 1"
     assert stats['total_service_time'] == 70.0, "Service time should include full duration (or at least be positive)"
 
-    # 4. Cleanup
-    print("\n[4] Cleanup...")
-    # (Optional) delete test data
+    # 4. End-to-End Test with OccupancyEngine
+    print("\n[4] Testing OccupancyEngine Logic...")
+    from core.occupancy_engine import OccupancyEngine
+    from config import CLIENT_ENTRY_THRESHOLD, CLIENT_EXIT_THRESHOLD
     
-    print("✅ Test Complete")
-
+    engine = OccupancyEngine()
+    
+    # Update with person present (Entry)
+    print("   -> Person enters...")
+    engine.update(place_id, is_person_present=True, zone_type="client", linked_employee_id=employee_id)
+    time.sleep(0.1)
+    
+    # Simulate time passing (Wait for entry threshold)
+    print(f"   -> Waiting {CLIENT_ENTRY_THRESHOLD}s virtual time...")
+    # Hack: Manually adjust start time to simulate passage of time
+    tracker = engine.get_or_create_tracker(place_id)
+    if tracker.entry_start_time:
+        tracker.entry_start_time -= (CLIENT_ENTRY_THRESHOLD + 1)
+        
+    # Update again to confirm entry
+    engine.update(place_id, is_person_present=True, zone_type="client", linked_employee_id=employee_id)
+    assert tracker.state.name == "OCCUPIED", f"State should be OCCUPIED, got {tracker.state}"
+    
+    # Simulate session duration
+    print("   -> Person stays for session...")
+    tracker.session_start -= timedelta(seconds=60) # Add 60s duration
+    
+    # Person leaves
+    print("   -> Person leaves...")
+    engine.update(place_id, is_person_present=False, zone_type="client", linked_employee_id=employee_id)
+    assert tracker.state.name == "CHECKING_EXIT", f"State should be CHECKING_EXIT, got {tracker.state}"
+    
+    # Simulate exit grace period expiry
+    print(f"   -> Waiting {CLIENT_EXIT_THRESHOLD}s virtual time for exit...")
+    if tracker.exit_start_time:
+        tracker.exit_start_time -= (CLIENT_EXIT_THRESHOLD + 1)
+        
+    # Update to trigger save
+    engine.update(place_id, is_person_present=False, zone_type="client", linked_employee_id=employee_id)
+    assert tracker.state.name == "VACANT", f"State should be VACANT, got {tracker.state}"
+    
+    # 5. Check Final Stats
+    print("\n[5] Checking stats after OccupancyEngine flow...")
+    stats = db.get_client_stats_for_employee(employee_id, today)
+    print(f"Final Stats: {stats}")
+    
+    # Should be 2 now (1 manual + 1 engine)
+    assert stats['client_count'] == 2, f"Client count should be 2, got {stats['client_count']}"
+    
+    print("✅ End-to-End Test Complete")
 if __name__ == "__main__":
     try:
         test_client_visit_recording()

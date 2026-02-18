@@ -35,7 +35,7 @@ from config import (CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config,
                     WORKPLACE_OWNERS, AUTO_CYCLE_INTERVAL, AUTO_CYCLE_PAUSE_DURATION,
                     FULLSCREEN_MODE)
 from core.stream_handler import StreamHandler
-from core.detector import PersonDetector, TrackingDetector
+from core.detector import PersonDetector
 from core.roi_manager import ROIManager
 from core.occupancy_engine import OccupancyEngine
 from core.sync_service import sync_service
@@ -111,10 +111,17 @@ class CameraMonitor:
         # Check presence in ROIs (We do this EVERY frame to keep UI responsive)
         presence = self.roi_manager.check_presence(person_centers)
         
-        # Update occupancy engine
+        # Update occupancy engine for ALL zones (Employee & Client)
         for roi in self.roi_manager.get_all_rois():
             is_present = presence.get(roi.id, False)
-            self.occupancy_engine.update(roi.id, is_present)
+            
+            # Use unified engine for both types
+            self.occupancy_engine.update(
+                zone_id=roi.id, 
+                is_person_present=is_present,
+                zone_type=roi.zone_type,
+                linked_employee_id=roi.linked_employee_id
+            )
             
             # Update ROI status for display
             status = self.occupancy_engine.get_zone_status(roi.id)
@@ -138,6 +145,31 @@ class CameraMonitor:
         for roi in self.roi_manager.get_all_rois():
             # Skip client zones - they have their own visual indicator
             if roi.zone_type == "client":
+                # Draw Client Timer Overlay
+                status = self.occupancy_engine.get_zone_status(roi.id)
+                if status in ["OCCUPIED", "CHECKING_EXIT"]:
+                    from config import CLIENT_ENTRY_THRESHOLD
+                    from gui.display import format_duration
+                    
+                    # Get elapsed time from engine
+                    elapsed = self.occupancy_engine.get_zone_time(roi.id)
+                    
+                    if elapsed >= CLIENT_ENTRY_THRESHOLD:
+                        pts = roi.get_polygon_array()
+                        M = cv2.moments(pts)
+                        if M["m00"] != 0:
+                            cx = int(M["m10"] / M["m00"])
+                            cy = int(M["m01"] / M["m00"]) + 50
+                            
+                            time_str = format_duration(elapsed)
+                            
+                            # Color: Green if occupied, Yellow if checking exit (grace)
+                            color = (0, 255, 0) if status == "OCCUPIED" else (0, 255, 255)
+                            
+                            cv2.putText(
+                                frame, time_str, (cx - 40, cy),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2
+                            )
                 continue
                 
             # Get ROI center position
@@ -222,16 +254,6 @@ class WorkplaceMonitor:
         # Shared detector (one YOLO instance for all cameras)
         print("[INFO] Loading YOLO detector...")
         self.detector = PersonDetector()
-        
-        # Tracking detector for client zones (ByteTrack)
-        print("[INFO] Loading ByteTrack tracker...")
-        self.tracking_detector = TrackingDetector()
-        
-        # Shared backup detector removed (using single YOLOv8s)
-        # self.head_detector = HeadDetector()
-        
-        # Client tracking state: {(camera_id, roi_id): {track_id: {'enter_time': datetime, 'last_seen': datetime}}}
-        self.client_tracking = {}
         
         # Create camera monitors
         self.cameras: list[CameraMonitor] = []
@@ -336,36 +358,8 @@ class WorkplaceMonitor:
                         if i == self.current_camera_idx:
                             display_frame = frame.copy()
                             
-                # 2. RUN DETECTION (Round-Robin Optimization)
-                # Strategy:
-                # - ALWAYS process the Current Camera (for smooth UI/Feedback)
-                # - Process ONE Background Camera per frame (to keep history without lag)
-                
-                # List of cameras to process this frame
-                cameras_to_process = []
-                
-                # A) Always Current Camera
-                if self.current_camera.is_connected:
-                    cameras_to_process.append(self.current_camera)
-                
-                # B) One Background Camera (Round-Robin)
-                # Find next connected background camera
-                checked_count = 0
-                while checked_count < len(self.cameras):
-                    idx = self.background_processing_idx
-                    cam = self.cameras[idx]
-                    
-                    # Move index for next frame
-                    self.background_processing_idx = (idx + 1) % len(self.cameras)
-                    
-                    if cam != self.current_camera and cam.is_connected:
-                        cameras_to_process.append(cam)
-                        break
-                    
-                    checked_count += 1
-                
-                # Execute Processing
-                for camera in cameras_to_process:
+                # 2. RUN DETECTION / TRACKING
+                for camera in self.cameras:
                     if camera.camera_db_id not in frames:
                         continue
                         
@@ -378,25 +372,14 @@ class WorkplaceMonitor:
                     # Run AI detection (YOLO)
                     processed_frame, person_count = camera.process_frame(frame)
                     
-                    # Run ByteTrack for client zones
-                    processed_frame = self._process_client_zones(processed_frame, camera)
-                    
                     # If this was Current Camera, update display frame
                     if camera == self.current_camera:
                         display_frame = processed_frame
-                        
+
                         # Draw person count
                         cv2.putText(
                             display_frame, f"Persons: {person_count}", (10, display_frame.shape[0] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
-                        )
-                        
-                        # Draw Resolution (Debugging ROI Shift)
-                        h, w = frame.shape[:2]
-                        res_text = f"Res: {w}x{h}"
-                        cv2.putText(
-                            display_frame, res_text, (w - 200, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
                         )
                 
                 # 3. UI OVERLAYS (on display frame only)
@@ -417,7 +400,6 @@ class WorkplaceMonitor:
                         display_frame = self.current_camera.roi_editor.draw_current(display_frame)
 
                 # Display current camera frame
-                # Display current camera frame (or error frame if None)
                 if display_frame is not None:
                     cv2.imshow(self.window_name, display_frame)
                 else:
@@ -467,156 +449,6 @@ class WorkplaceMonitor:
             frame, text, (10, 25),
             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
         )
-    
-    def _process_client_zones(self, frame, camera: CameraMonitor):
-        """
-        Process client zones with Zone-Based Tracking (Robust to ID changes)
-        Tracks if the ZONE is occupied, not the specific person ID.
-        """
-        from datetime import datetime
-        from config import CLIENT_ENTRY_THRESHOLD, CLIENT_EXIT_THRESHOLD
-        from gui.display import format_duration
-        
-        # Get client zones
-        client_zones = [roi for roi in camera.roi_manager.get_all_rois() 
-                       if roi.zone_type == "client"]
-        
-        if not client_zones:
-            return frame
-        
-        # Run tracking detection
-        detections = self.tracking_detector.detect(frame)
-        
-        now = datetime.now()
-        camera_id = camera.camera_db_id
-        
-        for roi in client_zones:
-            zone_key = (camera_id, roi.id)
-            
-            # Initialize zone state if needed
-            if zone_key not in self.client_tracking:
-                self.client_tracking[zone_key] = {
-                    'status': 'VACANT',       # VACANT, OCCUPIED, CHECKING_EXIT
-                    'start_time': None,       # When occupancy started
-                    'last_seen_time': None,   # Last time a person was seen
-                    'active_search_id': None, # ID for DB record (best guess)
-                    'debug_msg': ""
-                }
-            
-            zone_state = self.client_tracking[zone_key]
-            
-            # ── 1. Detect Presence ──
-            # Find ANY person in this zone
-            # We don't care about specific ID for timer, just that SOMEONE is there.
-            persons_in_zone = []
-            for det in detections:
-                if roi.contains_point(det.center):
-                    persons_in_zone.append(det)
-            
-            is_occupied = len(persons_in_zone) > 0
-            
-            # ── 2. Update State Machine ──
-            current_status = zone_state['status']
-            
-            if is_occupied:
-                # Someone is here!
-                # Update last seen time
-                zone_state['last_seen_time'] = now
-                
-                # Update tracked ID (use first one found as representative)
-                # This is just for the DB record later
-                best_person = min(persons_in_zone, key=lambda p: p.track_id) # Stable choice
-                zone_state['active_search_id'] = best_person.track_id
-                
-                if current_status == 'VACANT':
-                    # First person entered
-                    zone_state['status'] = 'OCCUPIED'
-                    zone_state['start_time'] = now
-                    print(f"🪑 Zone {roi.id}: Client enter (ID: {best_person.track_id})")
-                    
-                elif current_status == 'CHECKING_EXIT':
-                    # Person returned during grace period
-                    zone_state['status'] = 'OCCUPIED'
-                    print(f"🔄 Zone {roi.id}: Client returned (Grace period reset)")
-                    
-            else:
-                # No one is here
-                if current_status == 'OCCUPIED':
-                    # Just left, start checking exit
-                    zone_state['status'] = 'CHECKING_EXIT'
-                    print(f"🚪 Zone {roi.id}: Client left, checking exit ({CLIENT_EXIT_THRESHOLD}s grace)...")
-                    
-                elif current_status == 'CHECKING_EXIT':
-                    # Still gone... check threshold
-                    time_gone = (now - zone_state['last_seen_time']).total_seconds()
-                    
-                    if time_gone >= CLIENT_EXIT_THRESHOLD:
-                        # ── Session Finished ──
-                        # Calculate total duration (from start to last seen)
-                        if zone_state['start_time']:
-                            duration = (zone_state['last_seen_time'] - zone_state['start_time']).total_seconds()
-                            
-                            # Log short visits for debug
-                            print(f"⏱️ Zone {roi.id}: Session ended. Duration: {duration:.1f}s")
-                            
-                            # Only save if duration > threshold
-                            if duration >= CLIENT_ENTRY_THRESHOLD:
-                                employee_id = roi.linked_employee_id
-                                if employee_id:
-                                    track_id = zone_state['active_search_id'] or 0
-                                    db.save_client_visit(
-                                        place_id=roi.id,
-                                        employee_id=employee_id,
-                                        track_id=track_id,
-                                        enter_time=zone_state['start_time'],
-                                        exit_time=zone_state['last_seen_time'],
-                                        duration_seconds=duration
-                                    )
-                                    service_time = duration - CLIENT_ENTRY_THRESHOLD
-                                    print(f"✅ SAVED: Client → emp#{employee_id}: {int(service_time)}s (Net)")
-                            else:
-                                print(f"❌ IGNORED: Duration {duration:.1f}s < {CLIENT_ENTRY_THRESHOLD}s")
-                        
-                        # Reset Zone
-                        zone_state['status'] = 'VACANT'
-                        zone_state['start_time'] = None
-                        zone_state['last_seen_time'] = None
-                        zone_state['active_search_id'] = None
-
-            # ── 3. Draw Timer ──
-            # If status is OCCUPIED or CHECKING_EXIT (grace period), show timer
-            if zone_state['status'] in ['OCCUPIED', 'CHECKING_EXIT'] and zone_state['start_time']:
-                # Calculate elapsed time from START
-                # Note: In CHECKING_EXIT, time freezes at last_seen or continues?
-                # Standard practice: Timer should show "time served", so it pauses if they leave.
-                # But for simplicity and preventing "jumping", let's show time passed since start.
-                # If they leave, the session clamps to 'last_seen', so the displayed time might be slightly ahead 
-                # of saved time during the grace period (which is fine, it's "live").
-                
-                elapsed = (now - zone_state['start_time']).total_seconds()
-                
-                pts = roi.get_polygon_array()
-                M = cv2.moments(pts)
-                if M["m00"] != 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"]) + 50
-                    
-                    if elapsed >= CLIENT_ENTRY_THRESHOLD:
-                        display_time = elapsed
-                        time_str = format_duration(display_time)
-                        
-                        # Color: Green if occupied, Yellow if checking exit (grace)
-                        color = (0, 255, 0) if zone_state['status'] == 'OCCUPIED' else (0, 255, 255)
-                        
-                        cv2.putText(
-                            frame, time_str, (cx - 40, cy),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2
-                        )
-                    else:
-                         # Debug print for user to see it's working but invisible
-                         # Only print every 5 seconds to reduce spam
-                         if int(elapsed) % 5 == 0 and int(elapsed * 10) % 10 == 0:
-                             print(f"⏳ Zone {roi.id}: {zone_state['status']} for {elapsed:.1f}s (Waiting for {CLIENT_ENTRY_THRESHOLD}s)")
         
         # Draw tracking detections on frame
         frame = self.tracking_detector.draw_detections(frame, detections)

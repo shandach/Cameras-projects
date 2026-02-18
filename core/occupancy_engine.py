@@ -88,41 +88,52 @@ class OccupancyEngine:
             self.trackers[zone_id] = ZoneTracker(zone_id=zone_id)
         return self.trackers[zone_id]
     
-    def update(self, zone_id: int, is_person_present: bool):
+    def update(self, zone_id: int, is_person_present: bool, zone_type: str = "employee", linked_employee_id: int = None):
         """
-        Update zone state based on person presence
+        Update zone state based on person presence and zone type
         
         Args:
             zone_id: ID of the zone
             is_person_present: Whether a person is currently detected in zone
+            zone_type: "employee" or "client"
+            linked_employee_id: For client zones, the employee who gets credit
         """
         tracker = self.get_or_create_tracker(zone_id)
         current_time = time.time()
+        
+        # Determine thresholds based on zone type
+        from config import ENTRY_THRESHOLD, EXIT_THRESHOLD, CLIENT_ENTRY_THRESHOLD, CLIENT_EXIT_THRESHOLD
+        
+        if zone_type == "client":
+            entry_thresh = CLIENT_ENTRY_THRESHOLD
+            exit_thresh = CLIENT_EXIT_THRESHOLD
+        else:
+            entry_thresh = ENTRY_THRESHOLD
+            exit_thresh = EXIT_THRESHOLD
         
         if tracker.state == ZoneState.VACANT:
             if is_person_present:
                 # Person entered - start entry check
                 tracker.state = ZoneState.CHECKING_ENTRY
                 tracker.entry_start_time = current_time
-                print(f"🚶 Zone {zone_id}: Person entered, checking for 3 seconds...")
+                print(f"🚶 Zone {zone_id} ({zone_type}): Person entered, checking for {entry_thresh} seconds...")
         
         elif tracker.state == ZoneState.CHECKING_ENTRY:
             if is_person_present:
                 # Check if person stayed long enough
                 elapsed = current_time - tracker.entry_start_time
-                if elapsed >= ENTRY_THRESHOLD:
-                    # Confirmed entry - start timer FROM ENTRY TIME (include 3 sec check)
+                if elapsed >= entry_thresh:
+                    # Confirmed entry - start timer FROM ENTRY TIME
                     tracker.state = ZoneState.OCCUPIED
-                    # Timer starts from when person first entered, not from confirmation
                     tracker.timer_start_time = tracker.entry_start_time
                     tracker.accumulated_time = 0.0
-                    tracker.session_start = datetime.now() - timedelta(seconds=ENTRY_THRESHOLD)
-                    print(f"✅ Zone {zone_id}: Entry confirmed, timer includes {ENTRY_THRESHOLD:.0f}s check time")
+                    tracker.session_start = datetime.now() - timedelta(seconds=entry_thresh)
+                    print(f"✅ Zone {zone_id}: Entry confirmed, timer started")
             else:
                 # Person left before confirmation
                 tracker.state = ZoneState.VACANT
                 tracker.entry_start_time = None
-                print(f"👋 Zone {zone_id}: Person left before 3 seconds, returning to VACANT")
+                print(f"👋 Zone {zone_id}: Person left before confirmation")
         
         elif tracker.state == ZoneState.OCCUPIED:
             if not is_person_present:
@@ -133,7 +144,7 @@ class OccupancyEngine:
                 
                 tracker.state = ZoneState.CHECKING_EXIT
                 tracker.exit_start_time = current_time
-                print(f"⏸️ Zone {zone_id}: Person left, timer paused, waiting 10 seconds...")
+                print(f"⏸️ Zone {zone_id}: Person left, waiting {exit_thresh}s grace...")
         
         elif tracker.state == ZoneState.CHECKING_EXIT:
             if is_person_present:
@@ -145,32 +156,54 @@ class OccupancyEngine:
             else:
                 # Check if grace period expired
                 elapsed = current_time - tracker.exit_start_time
-                if elapsed >= EXIT_THRESHOLD:
+                if elapsed >= exit_thresh:
                     # Session complete - save to DB
-                    self._complete_session(tracker)
+                    self._complete_session(tracker, zone_type, linked_employee_id)
     
-    def _complete_session(self, tracker: ZoneTracker):
-        """Complete and save a work session"""
+    def _complete_session(self, tracker: ZoneTracker, zone_type: str = "employee", linked_employee_id: int = None):
+        """Complete and save a session (Work Session or Client Visit)"""
         duration = tracker.accumulated_time
         
         print(f"📝 Zone {tracker.zone_id}: Session complete - {duration:.1f} seconds")
         
-        # Save to database
+        # Save to database if valid
         if tracker.session_start and duration > 0:
             try:
-                # Look up employee assigned to this zone
-                employee = db.get_employee_by_place(tracker.zone_id)
-                employee_id = employee['id'] if employee else None
-                
-                session = db.save_session(
-                    place_id=tracker.zone_id,
-                    start_time=tracker.session_start,
-                    end_time=datetime.now(),
-                    duration_seconds=duration,
-                    employee_id=employee_id
-                )
-                emp_name = employee['name'] if employee else 'N/A'
-                print(f"💾 Session saved: {emp_name} ({duration:.0f}s)")
+                if zone_type == "client":
+                    # === CLIENT VISIT ===
+                    if linked_employee_id:
+                        # We use 0 for track_id since we tracked "any person"
+                        db.save_client_visit(
+                            place_id=tracker.zone_id,
+                            employee_id=linked_employee_id,
+                            track_id=0,
+                            enter_time=tracker.session_start,
+                            exit_time=datetime.now(),
+                            duration_seconds=duration
+                        )
+                        # Calc net service time (minus threshold) for display
+                        from config import CLIENT_ENTRY_THRESHOLD
+                        net_time = max(0, duration - CLIENT_ENTRY_THRESHOLD)
+                        print(f"💾 Client Visit saved: Linked to Emp#{linked_employee_id} ({net_time:.0f}s net)")
+                    else:
+                        print(f"⚠️ Client Visit IGNORED: Zone {tracker.zone_id} has no linked employee!")
+                        
+                else:
+                    # === EMPLOYEE SESSION ===
+                    # Look up employee assigned to this zone
+                    employee = db.get_employee_by_place(tracker.zone_id)
+                    employee_id = employee['id'] if employee else None
+                    
+                    db.save_session(
+                        place_id=tracker.zone_id,
+                        start_time=tracker.session_start,
+                        end_time=datetime.now(),
+                        duration_seconds=duration,
+                        employee_id=employee_id
+                    )
+                    emp_name = employee['name'] if employee else 'N/A'
+                    print(f"💾 Work Session saved: {emp_name} ({duration:.0f}s)")
+                    
             except Exception as e:
                 print(f"⚠️ Failed to save session: {e}")
         
