@@ -349,7 +349,9 @@ class ROIDemoApp:
                  r = rois[-1]
                  new_type = 'client' if r.zone_type == 'employee' else 'employee'
                  if not cam.is_sandbox:
-                     db.update_roi_type(r.id, new_type) # Assuming this method exists
+                     db.update_roi_type(r.id, new_type)
+                     # FIX: Must sync to JSON to prevent reversion on reload
+                     cam.roi_manager._save_to_json()
                  r.zone_type = new_type
                  print(f"Zone switched to {new_type}")
 

@@ -181,9 +181,9 @@ def draw_employee_stats_overlay(frame: np.ndarray,
         if panel_height > roi_h - 8:
             panel_height = max(50, roi_h - 8)
         
-        # Position: INSIDE the ROI, top-right corner with padding
+        # Position: INSIDE the ROI, bottom-right corner with padding
         panel_x = max_x - panel_width - 4
-        panel_y = min_y + 4
+        panel_y = max_y - panel_height - 4
         
         # Ensure we stay inside the ROI bounds
         panel_x = max(min_x + 2, panel_x)
