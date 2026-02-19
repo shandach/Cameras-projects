@@ -83,6 +83,7 @@ class Session(Base):
     duration_seconds = Column(Float, default=0.0)
     session_date = Column(Date, default=date.today)
     is_synced = Column(Integer, default=0)  # 0=False, 1=True
+    is_checkpoint = Column(Integer, default=0)  # 0=finished, 1=active checkpoint
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -106,6 +107,7 @@ class ClientVisit(Base):
     exit_time = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, default=0.0)
     is_synced = Column(Integer, default=0)  # 0=False, 1=True
+    is_checkpoint = Column(Integer, default=0)  # 0=finished, 1=active checkpoint
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships

@@ -18,7 +18,7 @@ from typing import Dict, Optional, Callable
 from datetime import datetime, date, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import ENTRY_THRESHOLD, EXIT_THRESHOLD
+from config import ENTRY_THRESHOLD, EXIT_THRESHOLD, CHECKPOINT_INTERVAL
 from database.db import db
 
 
@@ -48,6 +48,10 @@ class ZoneTracker:
     
     # Session tracking
     session_start: Optional[datetime] = None
+    
+    # Checkpoint tracking
+    checkpoint_db_id: Optional[int] = None     # DB record ID for checkpoint
+    last_checkpoint_time: Optional[float] = None  # When last checkpoint was saved
     
     def get_elapsed_time(self) -> float:
         """Get total elapsed time for current session"""
@@ -128,6 +132,7 @@ class OccupancyEngine:
                     tracker.timer_start_time = tracker.entry_start_time
                     tracker.accumulated_time = 0.0
                     tracker.session_start = datetime.now() - timedelta(seconds=entry_thresh)
+                    tracker.last_checkpoint_time = time.time()  # Start checkpoint timer
                     print(f"✅ Zone {zone_id}: Entry confirmed, timer started")
             else:
                 # Person left before confirmation
@@ -145,6 +150,12 @@ class OccupancyEngine:
                 tracker.state = ZoneState.CHECKING_EXIT
                 tracker.exit_start_time = current_time
                 print(f"⏸️ Zone {zone_id}: Person left, waiting {exit_thresh}s grace...")
+            else:
+                # Person still present — check if checkpoint is due
+                if (tracker.last_checkpoint_time and 
+                    current_time - tracker.last_checkpoint_time >= CHECKPOINT_INTERVAL):
+                    self._save_or_update_checkpoint(tracker, zone_type, linked_employee_id)
+                    tracker.last_checkpoint_time = current_time
         
         elif tracker.state == ZoneState.CHECKING_EXIT:
             if is_person_present:
@@ -164,24 +175,29 @@ class OccupancyEngine:
         """Complete and save a session (Work Session or Client Visit)"""
         duration = tracker.accumulated_time
         
-        print(f"📝 Zone {tracker.zone_id}: Session complete - {duration:.1f} seconds")
-        
-        # Save to database if valid
-        if tracker.session_start and duration > 0:
+        if tracker.checkpoint_db_id or (tracker.session_start and duration > 0):
             try:
                 if zone_type == "client":
                     # === CLIENT VISIT ===
                     if linked_employee_id:
-                        # We use 0 for track_id since we tracked "any person"
-                        db.save_client_visit(
-                            place_id=tracker.zone_id,
-                            employee_id=linked_employee_id,
-                            track_id=0,
-                            enter_time=tracker.session_start,
-                            exit_time=datetime.now(),
-                            duration_seconds=duration
-                        )
-                        # Calc net service time (minus threshold) for display
+                        if tracker.checkpoint_db_id:
+                            # Finalize existing checkpoint
+                            db.finalize_client_visit_checkpoint(
+                                visit_id=tracker.checkpoint_db_id,
+                                exit_time=datetime.now(),
+                                duration_seconds=duration
+                            )
+                        else:
+                            # No checkpoint (session < 5 min) — direct INSERT
+                            db.save_client_visit(
+                                place_id=tracker.zone_id,
+                                employee_id=linked_employee_id,
+                                track_id=0,
+                                enter_time=tracker.session_start,
+                                exit_time=datetime.now(),
+                                duration_seconds=duration
+                            )
+                        # Calc net service time for display
                         from config import CLIENT_ENTRY_THRESHOLD
                         net_time = max(0, duration - CLIENT_ENTRY_THRESHOLD)
                         print(f"💾 Client Visit saved: Linked to Emp#{linked_employee_id} ({net_time:.0f}s net)")
@@ -190,17 +206,25 @@ class OccupancyEngine:
                         
                 else:
                     # === EMPLOYEE SESSION ===
-                    # Look up employee assigned to this zone
                     employee = db.get_employee_by_place(tracker.zone_id)
                     employee_id = employee['id'] if employee else None
                     
-                    db.save_session(
-                        place_id=tracker.zone_id,
-                        start_time=tracker.session_start,
-                        end_time=datetime.now(),
-                        duration_seconds=duration,
-                        employee_id=employee_id
-                    )
+                    if tracker.checkpoint_db_id:
+                        # Finalize existing checkpoint
+                        db.finalize_session_checkpoint(
+                            session_id=tracker.checkpoint_db_id,
+                            end_time=datetime.now(),
+                            duration_seconds=duration
+                        )
+                    else:
+                        # No checkpoint (session < 5 min) — direct INSERT
+                        db.save_session(
+                            place_id=tracker.zone_id,
+                            start_time=tracker.session_start,
+                            end_time=datetime.now(),
+                            duration_seconds=duration,
+                            employee_id=employee_id
+                        )
                     emp_name = employee['name'] if employee else 'N/A'
                     print(f"💾 Work Session saved: {emp_name} ({duration:.0f}s)")
                     
@@ -214,10 +238,68 @@ class OccupancyEngine:
         tracker.timer_start_time = None
         tracker.accumulated_time = 0.0
         tracker.session_start = None
+        tracker.checkpoint_db_id = None
+        tracker.last_checkpoint_time = None
         
         # Callback
         if self.on_session_complete:
             self.on_session_complete(tracker.zone_id, duration)
+    
+    def _save_or_update_checkpoint(self, tracker: ZoneTracker, zone_type: str = "employee", linked_employee_id: int = None):
+        """Save or update periodic checkpoint for active session"""
+        if not tracker.session_start:
+            return
+        
+        # Calculate current duration
+        duration = tracker.accumulated_time
+        if tracker.timer_start_time:
+            duration += (time.time() - tracker.timer_start_time)
+        
+        now = datetime.now()
+        
+        try:
+            if zone_type == "client":
+                if not linked_employee_id:
+                    return
+                if tracker.checkpoint_db_id is None:
+                    # First checkpoint — INSERT
+                    tracker.checkpoint_db_id = db.save_client_visit_checkpoint(
+                        place_id=tracker.zone_id,
+                        employee_id=linked_employee_id,
+                        track_id=0,
+                        enter_time=tracker.session_start
+                    )
+                else:
+                    # Update existing checkpoint
+                    db.update_client_visit_checkpoint(
+                        visit_id=tracker.checkpoint_db_id,
+                        exit_time=now,
+                        duration_seconds=duration
+                    )
+            else:
+                # Employee session
+                employee = db.get_employee_by_place(tracker.zone_id)
+                employee_id = employee['id'] if employee else None
+                
+                if tracker.checkpoint_db_id is None:
+                    # First checkpoint — INSERT
+                    tracker.checkpoint_db_id = db.save_session_checkpoint(
+                        place_id=tracker.zone_id,
+                        employee_id=employee_id,
+                        start_time=tracker.session_start
+                    )
+                else:
+                    # Update existing checkpoint
+                    db.update_session_checkpoint(
+                        session_id=tracker.checkpoint_db_id,
+                        end_time=now,
+                        duration_seconds=duration
+                    )
+            
+            print(f"⏰ Zone {tracker.zone_id}: Checkpoint saved ({duration:.0f}s)")
+            
+        except Exception as e:
+            print(f"⚠️ Checkpoint save failed (Zone {tracker.zone_id}): {e}")
     
     def get_zone_status(self, zone_id: int) -> str:
         """Get display status for zone"""
@@ -283,13 +365,22 @@ class OccupancyEngine:
                 employee = db.get_employee_by_place(tracker.zone_id)
                 employee_id = employee['id'] if employee else None
                 
-                db.save_session(
-                    place_id=tracker.zone_id,
-                    start_time=tracker.session_start,
-                    end_time=datetime.now(),
-                    duration_seconds=duration,
-                    employee_id=employee_id
-                )
+                if tracker.checkpoint_db_id:
+                    # Finalize existing checkpoint
+                    db.finalize_session_checkpoint(
+                        session_id=tracker.checkpoint_db_id,
+                        end_time=datetime.now(),
+                        duration_seconds=duration
+                    )
+                else:
+                    # No checkpoint — create new session
+                    db.save_session(
+                        place_id=tracker.zone_id,
+                        start_time=tracker.session_start,
+                        end_time=datetime.now(),
+                        duration_seconds=duration,
+                        employee_id=employee_id
+                    )
                 print(f"✅ Saved active session: {duration:.1f}s")
             except Exception as e:
                 print(f"⚠️ Failed to save shutdown session: {e}")

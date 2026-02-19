@@ -96,6 +96,9 @@ EXIT_THRESHOLD = float(os.getenv("EXIT_THRESHOLD", "30.0"))   # 30 sec grace per
 CLIENT_ENTRY_THRESHOLD = float(os.getenv("CLIENT_ENTRY_THRESHOLD", "30.0"))  # 30 sec check
 CLIENT_EXIT_THRESHOLD = float(os.getenv("CLIENT_EXIT_THRESHOLD", "3.0"))    # 3 sec grace
 
+# Checkpoint interval (save active sessions to DB periodically)
+CHECKPOINT_INTERVAL = float(os.getenv("CHECKPOINT_INTERVAL", "300.0"))  # 5 min = 300 sec
+
 # Work hours (Tashkent timezone UZT +5)
 WORK_START = os.getenv("WORK_START", "08:45")
 WORK_END = os.getenv("WORK_END", "18:15")

@@ -41,6 +41,9 @@ class Database:
         
         # Session factory
         self.SessionLocal = sessionmaker(bind=self.engine)
+        
+        # Finalize any stale checkpoints from previous crash/power outage
+        self.finalize_stale_checkpoints()
     
     def get_session(self) -> DBSession:
         """Get database session"""
@@ -432,13 +435,127 @@ class Database:
                 'total_service_time': total_time
             }
 
+    # ============ Checkpoint Operations ============
+
+    def save_session_checkpoint(self, place_id: int, employee_id: int,
+                                 start_time: datetime) -> int:
+        """Create a checkpoint session record (is_checkpoint=1)"""
+        with self.get_session() as session:
+            work_session = Session(
+                place_id=place_id,
+                employee_id=employee_id,
+                start_time=start_time,
+                end_time=datetime.now(),
+                duration_seconds=0.0,
+                session_date=start_time.date(),
+                is_checkpoint=1
+            )
+            session.add(work_session)
+            session.commit()
+            session.refresh(work_session)
+            print(f"💾 Checkpoint created: Session #{work_session.id} (Zone {place_id})")
+            return work_session.id
+
+    def update_session_checkpoint(self, session_id: int, end_time: datetime,
+                                   duration_seconds: float):
+        """Update an existing checkpoint with latest time"""
+        with self.get_session() as session:
+            record = session.query(Session).filter(Session.id == session_id).first()
+            if record:
+                record.end_time = end_time
+                record.duration_seconds = duration_seconds
+                session.commit()
+
+    def finalize_session_checkpoint(self, session_id: int, end_time: datetime,
+                                     duration_seconds: float):
+        """Finalize checkpoint → completed session (is_checkpoint=0)"""
+        with self.get_session() as session:
+            record = session.query(Session).filter(Session.id == session_id).first()
+            if record:
+                record.end_time = end_time
+                record.duration_seconds = duration_seconds
+                record.is_checkpoint = 0
+                session.commit()
+                print(f"💾 Checkpoint finalized: Session #{session_id} ({duration_seconds:.0f}s)")
+
+    def save_client_visit_checkpoint(self, place_id: int, employee_id: int,
+                                      track_id: int, enter_time: datetime) -> int:
+        """Create a checkpoint client visit record (is_checkpoint=1)"""
+        with self.get_session() as session:
+            visit = ClientVisit(
+                place_id=place_id,
+                employee_id=employee_id,
+                track_id=track_id,
+                visit_date=enter_time.date(),
+                enter_time=enter_time,
+                exit_time=datetime.now(),
+                duration_seconds=0.0,
+                is_checkpoint=1
+            )
+            session.add(visit)
+            session.commit()
+            session.refresh(visit)
+            print(f"💾 Checkpoint created: ClientVisit #{visit.id} (Zone {place_id})")
+            return visit.id
+
+    def update_client_visit_checkpoint(self, visit_id: int, exit_time: datetime,
+                                        duration_seconds: float):
+        """Update an existing client visit checkpoint"""
+        with self.get_session() as session:
+            record = session.query(ClientVisit).filter(ClientVisit.id == visit_id).first()
+            if record:
+                record.exit_time = exit_time
+                record.duration_seconds = duration_seconds
+                session.commit()
+
+    def finalize_client_visit_checkpoint(self, visit_id: int, exit_time: datetime,
+                                          duration_seconds: float):
+        """Finalize client visit checkpoint → completed visit (is_checkpoint=0)"""
+        with self.get_session() as session:
+            record = session.query(ClientVisit).filter(ClientVisit.id == visit_id).first()
+            if record:
+                record.exit_time = exit_time
+                record.duration_seconds = duration_seconds
+                record.is_checkpoint = 0
+                session.commit()
+                print(f"💾 Checkpoint finalized: ClientVisit #{visit_id} ({duration_seconds:.0f}s)")
+
+    def finalize_stale_checkpoints(self):
+        """On startup: close any is_checkpoint=1 records from previous crash.
+        These represent sessions that were active when power went out.
+        """
+        with self.get_session() as session:
+            # Finalize stale session checkpoints
+            stale_sessions = session.query(Session).filter(
+                Session.is_checkpoint == 1
+            ).all()
+            for s in stale_sessions:
+                s.is_checkpoint = 0
+                print(f"🔧 Recovered stale session checkpoint #{s.id} "
+                      f"({s.duration_seconds:.0f}s)")
+            
+            # Finalize stale client visit checkpoints
+            stale_visits = session.query(ClientVisit).filter(
+                ClientVisit.is_checkpoint == 1
+            ).all()
+            for v in stale_visits:
+                v.is_checkpoint = 0
+                print(f"🔧 Recovered stale client visit checkpoint #{v.id} "
+                      f"({v.duration_seconds:.0f}s)")
+            
+            if stale_sessions or stale_visits:
+                session.commit()
+                print(f"🔧 Recovered {len(stale_sessions)} sessions + "
+                      f"{len(stale_visits)} client visits from previous crash")
+
     # ============ Sync Operations ============
 
     def get_unsynced_sessions(self, limit: int = 50) -> List[dict]:
-        """Get sessions pending synchronization"""
+        """Get completed sessions pending synchronization (excludes active checkpoints)"""
         with self.get_session() as session:
             records = session.query(Session).filter(
-                Session.is_synced == 0
+                Session.is_synced == 0,
+                Session.is_checkpoint == 0
             ).limit(limit).all()
             
             return [
@@ -455,10 +572,11 @@ class Database:
             ]
 
     def get_unsynced_client_visits(self, limit: int = 50) -> List[dict]:
-        """Get client visits pending synchronization"""
+        """Get completed client visits pending synchronization (excludes active checkpoints)"""
         with self.get_session() as session:
             records = session.query(ClientVisit).filter(
-                ClientVisit.is_synced == 0
+                ClientVisit.is_synced == 0,
+                ClientVisit.is_checkpoint == 0
             ).limit(limit).all()
             
             return [
