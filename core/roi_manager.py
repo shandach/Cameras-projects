@@ -1,6 +1,7 @@
 """
 ROI (Region of Interest) Manager
 Manages workplace zones for a specific camera
+Fixed sequential numbering with gap-filling.
 """
 import cv2
 import numpy as np
@@ -19,26 +20,21 @@ class ROI:
     id: int
     camera_id: int
     name: str
-    points: List[Tuple[int, int]]  # Polygon points
+    points: List[Tuple[int, int]]
     status: str = "VACANT"
-    zone_type: str = "employee"  # "employee" or "client"
-    employee_id: int = None  # For employee zones
-    linked_employee_id: int = None  # For client zones: which employee gets credit
-    
+    zone_type: str = "employee"       # "employee" or "client"
+    employee_id: int = None           # Employee assigned to this zone
+    linked_employee_id: int = None    # For client zones: which employee gets credit
+
     def contains_point(self, point: Tuple[int, int]) -> bool:
         """Check if a point is inside the polygon"""
         if len(self.points) < 3:
             return False
         
-        # Convert points to proper format for cv2.pointPolygonTest
-        pts = np.array(self.points, dtype=np.int32).reshape((-1, 1, 2))
-        
-        # point must be a tuple of floats
-        point_float = (float(point[0]), float(point[1]))
-        
-        result = cv2.pointPolygonTest(pts, point_float, False)
+        pts = np.array(self.points, dtype=np.int32)
+        result = cv2.pointPolygonTest(pts, point, False)
         return result >= 0
-    
+
     def get_polygon_array(self) -> np.ndarray:
         """Get polygon as numpy array for drawing"""
         return np.array(self.points, dtype=np.int32)
@@ -68,7 +64,6 @@ class ROIManager:
                 self._save_to_json()
         
         # 3. Sync JSON to DB (Ensure DB matches JSON for tracking)
-        # This handles the case where we moved JSON to a new PC with empty DB
         self._sync_json_to_db()
 
     def _load_from_json(self) -> bool:
@@ -100,7 +95,7 @@ class ROIManager:
                 )
                 self.rois[roi.id] = roi
             
-            print(f"� Camera {self.camera_id}: Loaded {len(self.rois)} ROIs from {self.json_path}")
+            print(f"📄 Camera {self.camera_id}: Loaded {len(self.rois)} ROIs from {self.json_path}")
             return True
             
         except Exception as e:
@@ -139,53 +134,23 @@ class ROIManager:
         try:
             with open(self.json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
-            # print(f"💾 ROIs saved to {self.json_path}")
         except Exception as e:
             print(f"⚠️ Failed to save JSON: {e}")
 
     def _sync_json_to_db(self):
         """
-        Ensure all loaded ROIs exist in DB.
-        Useful when migrating to a clean DB/PostgreSQL using only rois.json.
+        Ensure all loaded ROIs exist in DB with MATCHING IDs.
+        Uses save_place_with_id() to force the JSON ID into the DB.
         """
-        # Get existing IDs in DB to avoid duplicates
         existing_places = db.get_places_for_camera(self.camera_id)
         existing_ids = {p['id'] for p in existing_places}
         
-        for roi in self.rois.values():
+        for roi in list(self.rois.values()):
             if roi.id not in existing_ids:
-                print(f"🔄 Syncing ROI '{roi.name}' to DB...")
-                # We force the ID to match JSON ID to keep consistency
-                # Note: This assumes DB ID strategy allows manual ID or we rely on name matching
-                # For SQLite autoincrement, we usually let DB assign ID. 
-                # BUT for portability, if we want to keep relations, we might need to be careful.
-                # Here we just re-create the place.
+                print(f"🔄 Syncing ROI '{roi.name}' (ID:{roi.id}) to DB...")
                 try:
-                    # Check if ID exists (handled by set above), if not create
-                    # If ID collision is possible on new DB, handled by DB logic usually
-                    # Ideally we'd use UUIDs, but here lets trust the JSON ID if possible or let DB re-assign
-                    # To be safe and simple: Let's re-save using db.save_place which might create NEW ID
-                    # If we truly want to restore, we should probably update the ID in JSON to match new DB ID?
-                    # Or just insert.
-                    
-                    # Implementation detail: db.save_place creates new if not exists
-                    # We will use save_place logic.
-                    # Warning: This might create duplicates if we strictly rely on ID.
-                    # Let's check by NAME + Config to simulate "Restoring"
-                    pass 
-                    # Actually, simply saving it is enough for now.
-                    # If it's not in DB, we add it. 
-                    # Wait, if we add it, DB gives new ID. We must update current ROI object with new ID?
-                    # No, keep JSON ID for now? 
-                    # Better approach: If JSON has ID 5, and DB is empty. 
-                    # We insert. DB gives ID 1. 
-                    # Tracking data refers to ID 5... mismatch.
-                    # Ideally, when migrating, we migrate EVERYTHING including historical data.
-                    # For just ROIs:
-                    # Let's assume on migration we start fresh.
-                    # So we push to DB, get new ID, update our runtime object.
-                    
-                    new_place = db.save_place(
+                    db.save_place_with_id(
+                        place_id=roi.id,
                         camera_id=self.camera_id,
                         name=roi.name,
                         roi_coordinates=roi.points,
@@ -193,23 +158,9 @@ class ROIManager:
                         linked_employee_id=roi.linked_employee_id,
                         employee_id=roi.employee_id
                     )
-                    # Update ROI ID to match global DB ID
-                    if new_place.id != roi.id:
-                        print(f"   ⚠️ ID changed from {roi.id} to {new_place.id} during sync")
-                        # This invalidates the old ID in JSON, but ensures DB consistency
-                        # We should probably update the key in self.rois
-                        del self.rois[roi.id]
-                        roi.id = new_place.id
-                        self.rois[roi.id] = roi
-                        # And Trigger a JSON save at the end to reflect new IDs
-                        self.must_save_json = True
-                        
+                    print(f"   ✅ Synced '{roi.name}' with ID {roi.id}")
                 except Exception as e:
-                    print(f"⚠️ Sync failed for {roi.name}: {e}")
-        
-        if getattr(self, "must_save_json", False):
-             self._save_to_json()
-
+                    print(f"   ⚠️ Sync failed for {roi.name}: {e}")
 
     def _load_from_db(self):
         """Load ROIs from database (Fallback)"""
@@ -229,30 +180,20 @@ class ROIManager:
                 self.rois[roi.id] = roi
             
             if self.rois:
-                print(f"database Camera {self.camera_id}: Loaded {len(self.rois)} ROI zones from DB")
+                print(f"🗄️ Camera {self.camera_id}: Loaded {len(self.rois)} ROI zones from DB")
         except Exception as e:
             print(f"⚠️ Camera {self.camera_id}: Failed to load ROIs from DB: {e}")
     
     def add_roi(self, points: List[Tuple[int, int]], name: str = None, 
                 zone_type: str = "employee", linked_employee_id: int = None) -> ROI:
-        """Add a new ROI zone"""
-        place_count = len(self.rois) + 1
-        if name is None:
-            name = f"Client {place_count}" if zone_type == "client" else f"Place {place_count}"
+        """Add a new ROI zone to MEMORY only (not saved until Q is pressed).
+        Uses fixed sequential ID with gap-filling.
+        """
+        # Get next available ID considering both DB and memory
+        roi_id = self._get_next_available_id()
         
-        # 1. Save to DB first to get a valid ID
-        try:
-            place = db.save_place(
-                camera_id=self.camera_id,
-                name=name, 
-                roi_coordinates=list(points),
-                zone_type=zone_type,
-                linked_employee_id=linked_employee_id
-            )
-            roi_id = place.id
-        except Exception as e:
-            print(f"⚠️ Failed to save ROI to database: {e}")
-            roi_id = place_count # Fallback ID if DB fails
+        if name is None:
+            name = f"Зона #{roi_id}"
         
         roi = ROI(
             id=roi_id, 
@@ -264,15 +205,63 @@ class ROIManager:
         )
         self.rois[roi_id] = roi
         
-        # 2. Save to JSON
-        self._save_to_json()
-        
         zone_label = "employee" if zone_type == "employee" else f"client→emp#{linked_employee_id}"
-        print(f"✅ Camera {self.camera_id}: Added ROI '{roi.name}' ({zone_label})")
+        print(f"📝 Camera {self.camera_id}: Added '{roi.name}' (ID:{roi_id}, {zone_label}) [IN MEMORY]")
         return roi
     
+    def _get_next_available_id(self) -> int:
+        """Get next available ID considering both DB and memory zones"""
+        # Get all existing IDs from DB (single query)
+        all_db_places = db.get_all_places()
+        db_ids = {p['id'] for p in all_db_places}
+        
+        # Merge with memory IDs
+        all_ids = db_ids | set(self.rois.keys())
+        
+        if not all_ids:
+            return 1
+        
+        # Find first gap starting from 1
+        for candidate in range(1, max(all_ids) + 2):
+            if candidate not in all_ids:
+                return candidate
+    
+    def save_all_to_storage(self):
+        """Save ALL current memory zones to DB and JSON.
+        Called when user presses Q to confirm zones.
+        """
+        saved_count = 0
+        
+        # Get existing DB IDs for this camera
+        existing_places = db.get_places_for_camera(self.camera_id)
+        existing_ids = {p['id'] for p in existing_places}
+        
+        for roi in self.rois.values():
+            if roi.id not in existing_ids:
+                try:
+                    db.save_place_with_id(
+                        place_id=roi.id,
+                        camera_id=self.camera_id,
+                        name=roi.name,
+                        roi_coordinates=roi.points,
+                        zone_type=roi.zone_type,
+                        linked_employee_id=roi.linked_employee_id,
+                        employee_id=roi.employee_id
+                    )
+                    saved_count += 1
+                except Exception as e:
+                    print(f"⚠️ Failed to save zone #{roi.id}: {e}")
+        
+        # Save to JSON
+        self._save_to_json()
+        
+        if saved_count > 0:
+            print(f"💾 Camera {self.camera_id}: Saved {saved_count} new zones to DB + JSON")
+        
+        return saved_count
+    
     def delete_roi(self, roi_id: int) -> bool:
-        """Delete ROI by ID"""
+        """Delete ROI by ID (keeps historical data in sessions/visits)"""
         if roi_id in self.rois:
             # Delete from DB
             db.delete_place(roi_id)
@@ -281,7 +270,7 @@ class ROIManager:
             # Update JSON
             self._save_to_json()
             
-            print(f"🗑️ Camera {self.camera_id}: Deleted ROI {roi_id}")
+            print(f"🗑️ Camera {self.camera_id}: Deleted ROI #{roi_id}")
             return True
         return False
     
@@ -332,9 +321,12 @@ class ROIManager:
                   occupied_color: Tuple[int, int, int] = (0, 0, 255),
                   vacant_color: Tuple[int, int, int] = (0, 255, 0)) -> np.ndarray:
         """
-        Draw ROI zones on frame with different colors for employee/client zones
+        Draw ROI zones on frame with zone numbers and linkage info
         """
         overlay = frame.copy()
+        
+        # Collect all ROI centers for drawing link lines
+        roi_centers = {}
         
         for roi in self.rois.values():
             pts = roi.get_polygon_array()
@@ -359,7 +351,7 @@ class ROIManager:
             # Draw polygon outline
             cv2.polylines(frame, [pts], True, color, 2)
             
-            # Calculate centroid for status label
+            # Calculate centroid
             M = cv2.moments(pts)
             if M["m00"] != 0:
                 cx = int(M["m10"] / M["m00"])
@@ -367,11 +359,42 @@ class ROIManager:
             else:
                 cx, cy = pts[0][0], pts[0][1]
             
-            # Draw status at center of zone (no name - stats panel shows it)
-            cv2.putText(
-                frame, roi.status, (cx - 40, cy + 5),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2
-            )
+            roi_centers[roi.id] = (cx, cy)
+            
+            # --- Zone Label ---
+            if roi.zone_type == "client":
+                if roi.linked_employee_id:
+                    label = f"Client #{roi.id} -> Zone #{roi.linked_employee_id}"
+                else:
+                    label = f"Client #{roi.id} (no link)"
+            else:
+                label = f"Zone #{roi.id}"
+            
+            # Draw label with background
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            label_x = cx - tw // 2
+            label_y = cy - 10
+            cv2.rectangle(frame, (label_x - 3, label_y - th - 3), 
+                         (label_x + tw + 3, label_y + 3), (0, 0, 0), -1)
+            cv2.putText(frame, label, (label_x, label_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # Draw status below label
+            cv2.putText(frame, roi.status, (cx - 35, cy + 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+        
+        # --- Draw Connection Lines ---
+        for roi in self.rois.values():
+            if roi.zone_type == "client" and roi.linked_employee_id:
+                # Find the linked employee zone
+                linked_id = roi.linked_employee_id
+                if roi.id in roi_centers and linked_id in roi_centers:
+                    pt1 = roi_centers[roi.id]
+                    pt2 = roi_centers[linked_id]
+                    # Draw dashed line (approximated with dotted segments)
+                    self._draw_dashed_line(frame, pt1, pt2, (0, 200, 255), 2, 10)
+                    # Draw arrow head
+                    self._draw_arrowhead(frame, pt1, pt2, (0, 200, 255))
         
         # Blend overlay
         alpha = 0.3
@@ -379,20 +402,47 @@ class ROIManager:
         
         return frame
     
+    @staticmethod
+    def _draw_dashed_line(frame, pt1, pt2, color, thickness, dash_len):
+        """Draw a dashed line between two points"""
+        x1, y1 = pt1
+        x2, y2 = pt2
+        dist = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        if dist == 0:
+            return
+        dx = (x2 - x1) / dist
+        dy = (y2 - y1) / dist
+        
+        num_dashes = int(dist / (dash_len * 2))
+        for i in range(num_dashes + 1):
+            start_d = i * dash_len * 2
+            end_d = min(start_d + dash_len, dist)
+            sx = int(x1 + dx * start_d)
+            sy = int(y1 + dy * start_d)
+            ex = int(x1 + dx * end_d)
+            ey = int(y1 + dy * end_d)
+            cv2.line(frame, (sx, sy), (ex, ey), color, thickness)
+    
+    @staticmethod
+    def _draw_arrowhead(frame, pt1, pt2, color, size=15):
+        """Draw arrowhead at pt2 pointing from pt1"""
+        x1, y1 = pt1
+        x2, y2 = pt2
+        angle = np.arctan2(y2 - y1, x2 - x1)
+        
+        p1 = (int(x2 - size * np.cos(angle - np.pi/6)),
+              int(y2 - size * np.sin(angle - np.pi/6)))
+        p2 = (int(x2 - size * np.cos(angle + np.pi/6)),
+              int(y2 - size * np.sin(angle + np.pi/6)))
+        
+        cv2.fillPoly(frame, [np.array([pt2, p1, p2])], color)
+
     def import_predefined_rois(self, predefined_rois: list, ref_res: tuple, 
                                 frame_res: tuple, employee_ids: list = None) -> int:
         """
         Import pre-defined ROI zones from config, scaling coordinates.
         Skips if ROIs already exist for this camera.
-        
-        Args:
-            predefined_rois: List of polygon coordinate lists [[(x,y), ...], ...]
-            ref_res: Reference resolution (width, height) from config
-            frame_res: Actual frame resolution (width, height)
-            employee_ids: Optional list of employee IDs to assign to each ROI
-            
-        Returns:
-            Number of ROIs imported
+        Uses fixed sequential IDs.
         """
         # Skip if ROIs already exist
         if len(self.rois) > 0:
@@ -416,11 +466,13 @@ class ROIManager:
             # Assign employee if available
             emp_id = employee_ids[i] if employee_ids and i < len(employee_ids) else None
             
-            name = f"Место {i + 1}"
+            # Use fixed ID system
+            roi_id = db.get_next_zone_id()
+            name = f"Зона #{roi_id}"
             
-            # Save to database
             try:
-                place = db.save_place(
+                db.save_place_with_id(
+                    place_id=roi_id,
                     camera_id=self.camera_id,
                     name=name,
                     roi_coordinates=list(scaled_points),
@@ -429,7 +481,7 @@ class ROIManager:
                 )
                 
                 roi = ROI(
-                    id=place.id,
+                    id=roi_id,
                     camera_id=self.camera_id,
                     name=name,
                     points=list(scaled_points),
@@ -443,7 +495,7 @@ class ROIManager:
         
         if imported:
             print(f"📍 Camera {self.camera_id}: Imported {imported} predefined ROIs")
-            self._save_to_json()  # Backup after import
+            self._save_to_json()
         
         return imported
 

@@ -100,7 +100,7 @@ class Database:
     def save_place(self, camera_id: int, name: str, roi_coordinates: list,
                    zone_type: str = "employee", linked_employee_id: int = None,
                    employee_id: int = None) -> Place:
-        """Save a new place/zone"""
+        """Save a new place/zone (autoincrement ID — legacy)"""
         with self.get_session() as session:
             place = Place(
                 camera_id=camera_id,
@@ -114,6 +114,67 @@ class Database:
             session.commit()
             session.refresh(place)
             return place
+    
+    def save_place_with_id(self, place_id: int, camera_id: int, name: str, 
+                           roi_coordinates: list, zone_type: str = "employee",
+                           linked_employee_id: int = None, 
+                           employee_id: int = None) -> Place:
+        """Save a place with a FORCED ID (for fixed numbering)"""
+        import json as json_lib
+        from sqlalchemy import text
+        with self.get_session() as session:
+            # Ensure coordinates are JSON-serializable lists (not tuples)
+            clean_coords = [[int(x), int(y)] for x, y in roi_coordinates]
+            
+            # Use raw INSERT to force specific ID
+            session.execute(text(
+                "INSERT INTO places (id, camera_id, name, roi_coordinates, zone_type, "
+                "linked_employee_id, employee_id, status, created_at, updated_at) "
+                "VALUES (:id, :camera_id, :name, :roi_coords, :zone_type, "
+                ":linked_emp_id, :emp_id, 'VACANT', datetime('now'), datetime('now'))"
+            ), {
+                "id": place_id,
+                "camera_id": camera_id,
+                "name": name,
+                "roi_coords": json_lib.dumps(clean_coords),
+                "zone_type": zone_type,
+                "linked_emp_id": linked_employee_id,
+                "emp_id": employee_id
+            })
+            session.commit()
+            # Retrieve the created object
+            place = session.query(Place).filter(Place.id == place_id).first()
+            return place
+    
+    def get_next_zone_id(self) -> int:
+        """
+        Get next available zone ID with gap-filling.
+        If IDs are [1,2,3,5,6,7] → returns 4 (fills gap).
+        If IDs are [1,2,3] → returns 4 (next sequential).
+        If no zones exist → returns 1.
+        """
+        with self.get_session() as session:
+            existing_ids = sorted([
+                p.id for p in session.query(Place.id).all()
+            ])
+            
+            if not existing_ids:
+                return 1
+            
+            # Find first gap
+            for expected_id in range(1, existing_ids[-1] + 1):
+                if expected_id not in existing_ids:
+                    return expected_id
+            
+            # No gaps — return next after max
+            return existing_ids[-1] + 1
+    
+    def delete_all_places(self) -> int:
+        """Delete ALL places across all cameras, returns count deleted"""
+        with self.get_session() as session:
+            count = session.query(Place).delete()
+            session.commit()
+            return count
     
     def get_places_for_camera(self, camera_id: int) -> List[dict]:
         """Get all places for a specific camera"""

@@ -62,12 +62,6 @@ def load_cameras_from_env() -> List[CameraConfig]:
                 name=camera_name,
                 url=url
             )
-            
-            # Apply ROI Template if available
-            if camera_id in ROI_TEMPLATES:
-                tmpl = ROI_TEMPLATES[camera_id]
-                cam_config.predefined_rois = tmpl["rois"]
-                cam_config.ref_res = tmpl["ref_res"]
                 
             cameras.append(cam_config)
     
@@ -75,79 +69,7 @@ def load_cameras_from_env() -> List[CameraConfig]:
     return cameras
 
 
-# ═══════════════════════════════════════════════════
-# Default Configuration (Fallback if .env is missing)
-# ═══════════════════════════════════════════════════
-
-# NOTE: Real camera URLs should be in .env file for security.
-# Example: CAMERA_1_URL=rtsp://admin:pass@192.168.1.100:554/...
-
-# ═══════════════════════════════════════════════════
-# PREDEFINED ROI TEMPLATES (Auto-Restore Source)
-# Extended with Reference Resolution for correct scaling
-# ═══════════════════════════════════════════════════
-
-ROI_TEMPLATES = {
-    1: {
-        "ref_res": (1920, 1080),
-        "rois": [
-            [(38, 488), (188, 300), (345, 369), (183, 512)],
-            [(230, 549), (381, 389), (506, 465), (323, 606)],
-            [(410, 644), (578, 455), (680, 533), (549, 735)],
-            [(1155, 339), (989, 425), (1134, 755), (1305, 602)],
-            [(1383, 468), (1166, 311), (1257, 221), (1425, 365)],
-            [(1290, 215), (1359, 143), (1508, 269), (1425, 315)],
-        ]
-    },
-    6: {
-        "ref_res": (1920, 1080),
-        "rois": [
-            [(317, 411), (480, 252), (591, 363), (381, 491)],
-            [(453, 557), (672, 380), (861, 519), (591, 699)],
-            [(687, 780), (935, 567), (1188, 738), (911, 1001)],
-        ]
-    },
-    7: {
-        "ref_res": (3200, 1800),
-        "rois": [
-            [(1062, 802), (1940, 357), (2515, 1190), (1580, 1637)],
-        ]
-    },
-    10: {
-        "ref_res": (3200, 1800),
-        "rois": [
-            [(680, 1230), (1500, 407), (2452, 1080), (1922, 1787)],
-        ]
-    }
-}
-
 DEFAULT_CAMERAS = []
-
-
-# ═══════════════════════════════════════════════════
-# Operators from WORKPLACE_OWNERS (real employees)
-# Maps workplace_id -> operator name
-# ═══════════════════════════════════════════════════
-
-WORKPLACE_OWNERS = {
-    # Camera 01 (IDs 1-6)
-    1: 'Operator 5',
-    2: 'Operator 6',
-    3: 'Operator 7',
-    4: 'Operator 8',
-    5: 'Operator 9',
-    6: 'Operator 10',
-    # Camera 03 (ID 7)
-    7: 'Operator 3',
-    # Camera 06 (IDs 8-10)
-    8: 'Operator 11',
-    9: 'Operator 12',
-    10: 'Operator 13',
-    # Camera 07 (ID 11)
-    11: 'Operator 2',
-    # Camera 10 (ID 12)
-    12: 'Operator 1',
-}
 
 
 # Load cameras: prefer .env, fallback to DEFAULT_CAMERAS
@@ -210,12 +132,8 @@ def print_config():
             display_url = re.sub(r'://[^:]+:[^@]+@', '://***:***@', cam.url)
             print(f"  Camera {cam.id}: {cam.name}")
             print(f"           URL: {display_url}")
-            rois_count = len(cam.predefined_rois) if cam.predefined_rois else 0
-            if rois_count:
-                print(f"           ROIs: {rois_count} predefined")
     
     print(f"\n  Total cameras: {len(CAMERAS)}")
-    print(f"  Total operators: {len(WORKPLACE_OWNERS)}")
     print(f"  Auto-cycle: {AUTO_CYCLE_INTERVAL}s (ping-pong)")
     print("=" * 50 + "\n")
 

@@ -32,7 +32,7 @@ from datetime import date
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (CAMERAS, ROI_COLOR_OCCUPIED, ROI_COLOR_VACANT, print_config,
-                    WORKPLACE_OWNERS, AUTO_CYCLE_INTERVAL, AUTO_CYCLE_PAUSE_DURATION,
+                    AUTO_CYCLE_INTERVAL, AUTO_CYCLE_PAUSE_DURATION,
                     FULLSCREEN_MODE)
 from core.stream_handler import StreamHandler
 from core.detector import PersonDetector
@@ -283,9 +283,9 @@ class WorkplaceMonitor:
         self.running = False
         self.window_name = "Workplace Monitoring"
         
-        # Seed employees from config (only creates missing ones)
-        if WORKPLACE_OWNERS:
-            db.seed_employees_from_config(WORKPLACE_OWNERS)
+        # OSD message state (for on-screen confirmations)
+        self._osd_message = None
+        self._osd_expire_time = 0
     
     @property
     def current_camera(self) -> CameraMonitor:
@@ -315,8 +315,7 @@ class WorkplaceMonitor:
         if connected_count == 0:
             print("⚠️ No cameras with ROI zones. Press W to view all cameras and draw zones.")
         
-        # Import predefined ROIs for cameras that have them
-        self._import_predefined_rois()
+        # No predefined ROI import — user draws manually
         
         # Create fullscreen window
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
@@ -398,6 +397,9 @@ class WorkplaceMonitor:
                     # Draw ROI editor
                     if self.current_camera.roi_editor.is_drawing:
                         display_frame = self.current_camera.roi_editor.draw_current(display_frame)
+                    
+                    # Draw OSD (on-screen messages)
+                    self._draw_osd(display_frame)
 
                 # Display current camera frame
                 if display_frame is not None:
@@ -542,41 +544,23 @@ class WorkplaceMonitor:
         else:
             print("⚠️ No cameras have ROI zones. Draw ROIs to start monitoring.")
     
-    def _import_predefined_rois(self):
-        """Import pre-defined ROIs from config for cameras that have them"""
-        print("\n🔍 Checking ROI configuration...")
-        for camera in self.cameras:
-            config = camera.config
-            current_rois = camera.roi_manager.get_all_rois()
-            
-            # CASE 1: Zones exist -> Good.
-            if current_rois:
-                print(f"✅ {config.name}: Loaded {len(current_rois)} zones from storage.")
-                continue
-
-            # CASE 2: No zones, but template exists -> RESTORE.
-            if not current_rois and config.predefined_rois:
-                print(f"⚠️ {config.name}: No zones found! Attempting to restore from template...")
-                
-                if config.ref_res:
-                    # Get actual frame resolution
-                    frame_res = camera.stream.get_frame_size()
-                    if frame_res[0] == 0 or frame_res[1] == 0:
-                        frame_res = (1920, 1080)  # Default fallback
-                    
-                    imported = camera.roi_manager.import_predefined_rois(
-                        predefined_rois=config.predefined_rois,
-                        ref_res=config.ref_res,
-                        frame_res=frame_res
-                    )
-                    if imported:
-                        print(f"✅ {config.name}: RESTORED {imported} zones from template.")
-                    else:
-                        print(f"❌ {config.name}: Failed to restore zones.")
-            
-            # CASE 3: No zones, no template -> View Only.
-            else:
-                 print(f"ℹ️ {config.name}: No zones configured. Camera will be View-Only (no AI).")
+    def _show_osd(self, message: str, duration: float = 3.0):
+        """Show on-screen display message"""
+        self._osd_message = message
+        self._osd_expire_time = time.time() + duration
+    
+    def _draw_osd(self, frame):
+        """Draw OSD message if active"""
+        if self._osd_message and time.time() < self._osd_expire_time:
+            h, w = frame.shape[:2]
+            text = self._osd_message
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+            x = (w - tw) // 2
+            y = h - 60
+            cv2.rectangle(frame, (x - 10, y - th - 10), (x + tw + 10, y + 10), (0, 0, 0), -1)
+            cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 200), 2)
+        elif self._osd_message:
+            self._osd_message = None
     
     def _handle_keyboard(self):
         """Handle keyboard input"""
@@ -584,6 +568,10 @@ class WorkplaceMonitor:
         camera = self.current_camera
         
         if key == ord('q') or key == ord('Q'):
+            # Save all drawn zones to DB and JSON before quitting
+            print("\n💾 Saving all zones...")
+            for cam in self.cameras:
+                cam.roi_manager.save_all_to_storage()
             self.running = False
         
         elif key == ord('r') or key == ord('R'):
@@ -662,43 +650,42 @@ class WorkplaceMonitor:
                     self._save_roi_with_type("client", linked_employee_id=None)
 
         elif key == ord('l') or key == ord('L'):
-            # Link LAST Client Zone to next Employee (Cycle)
+            # Link LAST Client Zone to next Employee Zone (Cycle through zone IDs)
             rois = camera.roi_manager.get_all_rois()
             if rois:
-                # Target the last zone (simplified selection)
                 target_roi = rois[-1]
                 
                 if target_roi.zone_type == 'client':
-                    # Get available employees
-                    emp_ids = sorted(list(WORKPLACE_OWNERS.keys()))
-                    if not emp_ids:
-                        print("⚠️ No employees configured in WORKPLACE_OWNERS!")
+                    # Get all employee zone IDs from ALL cameras  
+                    all_employee_zone_ids = []
+                    for cam in self.cameras:
+                        for r in cam.roi_manager.get_all_rois():
+                            if r.zone_type == 'employee':
+                                all_employee_zone_ids.append(r.id)
+                    all_employee_zone_ids.sort()
+                    
+                    if not all_employee_zone_ids:
+                        print("⚠️ Нет зон сотрудников для привязки!")
+                        self._show_osd("No employee zones to link!", 3)
                     else:
                         current_id = target_roi.linked_employee_id
                         
-                        # Calculate next ID
-                        if current_id is None:
-                            new_id = emp_ids[0]
+                        if current_id is None or current_id not in all_employee_zone_ids:
+                            new_id = all_employee_zone_ids[0]
                         else:
-                            try:
-                                idx = emp_ids.index(current_id)
-                                new_id = emp_ids[(idx + 1) % len(emp_ids)]
-                            except ValueError:
-                                new_id = emp_ids[0]
+                            idx = all_employee_zone_ids.index(current_id)
+                            new_id = all_employee_zone_ids[(idx + 1) % len(all_employee_zone_ids)]
                         
-                        # Update Memory
                         target_roi.linked_employee_id = new_id
-                        
-                        # Update DB
                         db.update_roi_link(target_roi.id, new_id)
-                        
-                        # Update JSON
                         camera.roi_manager._save_to_json()
                         
-                        emp_name = WORKPLACE_OWNERS.get(new_id, "Unknown")
-                        print(f"🔗 Zone '{target_roi.name}' linked to {emp_name} (ID: {new_id})")
+                        msg = f"Client #{target_roi.id} -> Zone #{new_id}"
+                        print(f"🔗 {msg}")
+                        self._show_osd(msg, 3)
                 else:
-                    print("⚠️ Can only link CLIENT zones (Select a client zone first or draw one)")
+                    print("⚠️ Привязка только для CLIENT зон!")
+                    self._show_osd("Press L on a CLIENT zone", 2)
                 
         elif key == ord('z') or key == ord('Z'):
              # Clear all ROIs for current camera (moved from C)
