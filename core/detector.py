@@ -70,11 +70,11 @@ class PersonDetector:
                 confidence = float(box.conf[0].cpu().numpy())
                 
                 # Calculate center
-                center_x = (x1 + x2) // 2
-                center_y = (y1 + y2) // 2
+                center_x = int((x1 + x2) // 2)
+                center_y = int((y1 + y2) // 2)
                 
                 detection = Detection(
-                    bbox=(x1, y1, x2, y2),
+                    bbox=(int(x1), int(y1), int(x2), int(y2)),
                     confidence=confidence,
                     center=(center_x, center_y)
                 )
