@@ -595,16 +595,7 @@ class WorkplaceMonitor:
             else:
                 print("ℹ️ Draw ROI first (R), then press E for employee zone")
         
-        elif key >= ord('0') and key <= ord('9'):
-            # Select employee for client zone linking (1-9 = employees 1-9, 0 = employee 10)
-            if hasattr(self, '_waiting_employee_link') and self._waiting_employee_link:
-                digit = int(chr(key))
-                employee_idx = 9 if digit == 0 else digit - 1  # 0 means 10th, 1-9 means 1st-9th
-                employees = db.get_all_employees()
-                if employee_idx < len(employees):
-                    self._link_and_save_client_zone(employees[employee_idx]['id'])
-                else:
-                    print(f"❌ Сотрудник #{employee_idx + 1} не найден")
+
         
         elif key == 27:  # Escape
             if camera.roi_editor.is_drawing:
@@ -634,20 +625,10 @@ class WorkplaceMonitor:
                 self._switch_camera(-1)
 
         elif key == ord('c') or key == ord('C'):
-            # Check if waiting for zone type
+            # Client zone — create immediately, link later with L
             if hasattr(self, '_waiting_zone_type') and self._waiting_zone_type:
-                # Client zone - need to link to employee
-                employees = db.get_all_employees()
-                if employees:
-                    print("👤 Выберите сотрудника (1-9, 0=10):")
-                    for i, emp in enumerate(employees[:10]):
-                        key_hint = 0 if i == 9 else i + 1  # 1-9 for first 9, 0 for 10th
-                        print(f"   {key_hint}: {emp['name']}")
-                    self._waiting_employee_link = True
-                    self._waiting_zone_type = False  # Important: switch state to prevent conflicts
-                else:
-                    print("⚠️ Сотрудники не найдены в БД. Создаём зону без привязки.")
-                    self._save_roi_with_type("client", linked_employee_id=None)
+                self._save_roi_with_type("client", linked_employee_id=None)
+                print("ℹ️ Use L key to link this client zone to an employee zone")
 
         elif key == ord('l') or key == ord('L'):
             # Link LAST Client Zone to next Employee Zone (Cycle through zone IDs)
@@ -729,11 +710,7 @@ class WorkplaceMonitor:
             self._waiting_zone_type = False
             print(f"✅ ROI saved as {zone_type} zone")
     
-    def _link_and_save_client_zone(self, employee_id: int):
-        """Save client zone linked to employee"""
-        self._save_roi_with_type("client", linked_employee_id=employee_id)
-        self._waiting_employee_link = False
-        print(f"✅ Client zone linked to employee ID {employee_id}")
+
 
     def _handle_mouse(self, event, x, y, flags, param):
         """Handle mouse events - delegate to ROI editor or handle deletion"""
