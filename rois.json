@@ -1,0 +1,448 @@
+{
+    "1": [
+        {
+            "id": 2,
+            "name": "Зона #2",
+            "points": [
+                [
+                    524,
+                    474
+                ],
+                [
+                    678,
+                    561
+                ],
+                [
+                    483,
+                    801
+                ],
+                [
+                    346,
+                    668
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 3,
+            "name": "Зона #3",
+            "points": [
+                [
+                    1047,
+                    430
+                ],
+                [
+                    1152,
+                    332
+                ],
+                [
+                    1300,
+                    542
+                ],
+                [
+                    1074,
+                    792
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 4,
+            "name": "Зона #4",
+            "points": [
+                [
+                    1161,
+                    310
+                ],
+                [
+                    1287,
+                    218
+                ],
+                [
+                    1420,
+                    392
+                ],
+                [
+                    1314,
+                    468
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 5,
+            "name": "Зона #5",
+            "points": [
+                [
+                    1281,
+                    195
+                ],
+                [
+                    1376,
+                    140
+                ],
+                [
+                    1496,
+                    250
+                ],
+                [
+                    1442,
+                    318
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 1,
+            "name": "Зона #1",
+            "points": [
+                [
+                    358,
+                    380
+                ],
+                [
+                    492,
+                    472
+                ],
+                [
+                    342,
+                    634
+                ],
+                [
+                    214,
+                    528
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 11,
+            "name": "Зона #11",
+            "points": [
+                [
+                    523,
+                    437
+                ],
+                [
+                    587,
+                    351
+                ],
+                [
+                    464,
+                    288
+                ],
+                [
+                    407,
+                    380
+                ]
+            ],
+            "zone_type": "client",
+            "employee_id": null,
+            "linked_employee_id": 1
+        },
+        {
+            "id": 12,
+            "name": "Зона #12",
+            "points": [
+                [
+                    1070,
+                    229
+                ],
+                [
+                    1170,
+                    143
+                ],
+                [
+                    1266,
+                    187
+                ],
+                [
+                    1164,
+                    283
+                ]
+            ],
+            "zone_type": "client",
+            "employee_id": null,
+            "linked_employee_id": 5
+        }
+    ],
+    "2": [],
+    "3": [
+        {
+            "id": 10,
+            "name": "Зона #10",
+            "points": [
+                [
+                    748,
+                    569
+                ],
+                [
+                    1388,
+                    390
+                ],
+                [
+                    1616,
+                    990
+                ],
+                [
+                    911,
+                    1046
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 11,
+            "name": "Зона #11",
+            "points": [
+                [
+                    618,
+                    267
+                ],
+                [
+                    950,
+                    138
+                ],
+                [
+                    1200,
+                    239
+                ],
+                [
+                    670,
+                    452
+                ]
+            ],
+            "zone_type": "client",
+            "employee_id": null,
+            "linked_employee_id": 10
+        }
+    ],
+    "4": [],
+    "5": [],
+    "6": [
+        {
+            "id": 6,
+            "name": "Зона #6",
+            "points": [
+                [
+                    474,
+                    278
+                ],
+                [
+                    586,
+                    386
+                ],
+                [
+                    357,
+                    514
+                ],
+                [
+                    300,
+                    358
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 7,
+            "name": "Зона #7",
+            "points": [
+                [
+                    878,
+                    574
+                ],
+                [
+                    1143,
+                    754
+                ],
+                [
+                    808,
+                    1065
+                ],
+                [
+                    584,
+                    795
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 11,
+            "name": "Зона #11",
+            "points": [
+                [
+                    607,
+                    166
+                ],
+                [
+                    773,
+                    284
+                ],
+                [
+                    687,
+                    363
+                ],
+                [
+                    524,
+                    271
+                ]
+            ],
+            "zone_type": "client",
+            "employee_id": null,
+            "linked_employee_id": 6
+        },
+        {
+            "id": 12,
+            "name": "Зона #12",
+            "points": [
+                [
+                    1055,
+                    426
+                ],
+                [
+                    1435,
+                    648
+                ],
+                [
+                    1301,
+                    762
+                ],
+                [
+                    954,
+                    546
+                ]
+            ],
+            "zone_type": "client",
+            "employee_id": null,
+            "linked_employee_id": 7
+        }
+    ],
+    "7": [
+        {
+            "id": 9,
+            "name": "Зона #9",
+            "points": [
+                [
+                    640,
+                    476
+                ],
+                [
+                    1352,
+                    165
+                ],
+                [
+                    1738,
+                    807
+                ],
+                [
+                    891,
+                    1069
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 11,
+            "name": "Зона #11",
+            "points": [
+                [
+                    352,
+                    127
+                ],
+                [
+                    910,
+                    4
+                ],
+                [
+                    1227,
+                    45
+                ],
+                [
+                    477,
+                    384
+                ]
+            ],
+            "zone_type": "client",
+            "employee_id": null,
+            "linked_employee_id": 9
+        }
+    ],
+    "8": [],
+    "9": [],
+    "10": [
+        {
+            "id": 8,
+            "name": "Зона #8",
+            "points": [
+                [
+                    265,
+                    834
+                ],
+                [
+                    946,
+                    181
+                ],
+                [
+                    1864,
+                    793
+                ],
+                [
+                    634,
+                    1075
+                ]
+            ],
+            "zone_type": "employee",
+            "employee_id": null,
+            "linked_employee_id": null
+        },
+        {
+            "id": 11,
+            "name": "Зона #11",
+            "points": [
+                [
+                    1,
+                    254
+                ],
+                [
+                    222,
+                    7
+                ],
+                [
+                    747,
+                    34
+                ],
+                [
+                    91,
+                    701
+                ]
+            ],
+            "zone_type": "client",
+            "employee_id": null,
+            "linked_employee_id": 8
+        }
+    ],
+    "11": [],
+    "12": [],
+    "13": [],
+    "14": [],
+    "15": [],
+    "16": []
+}
