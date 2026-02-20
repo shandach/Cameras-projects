@@ -208,6 +208,7 @@ class CloudSyncService:
                             id=r['id'], # Keep same ID
                             place_id=r['place_id'],
                             employee_id=r['employee_id'],
+                            branch_id=BRANCH_ID,
                             start_time=datetime.fromisoformat(r['start_time']),
                             end_time=datetime.fromisoformat(r['end_time']) if r['end_time'] else None,
                             duration_seconds=r['duration_seconds'],
@@ -219,6 +220,7 @@ class CloudSyncService:
                             id=r['id'],
                             place_id=r['place_id'],
                             employee_id=r['employee_id'],
+                            branch_id=BRANCH_ID,
                             track_id=r['track_id'],
                             visit_date=datetime.fromisoformat(r['enter_time']).date(),
                             enter_time=datetime.fromisoformat(r['enter_time']),
