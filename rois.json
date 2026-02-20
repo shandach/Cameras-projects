@@ -22,7 +22,7 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 3,
             "linked_employee_id": null
         },
         {
@@ -47,7 +47,7 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 4,
             "linked_employee_id": null
         },
         {
@@ -72,7 +72,7 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 5,
             "linked_employee_id": null
         },
         {
@@ -97,7 +97,7 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 6,
             "linked_employee_id": null
         },
         {
@@ -122,7 +122,7 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 2,
             "linked_employee_id": null
         },
         {
@@ -200,12 +200,12 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 7,
             "linked_employee_id": null
         },
         {
-            "id": 11,
-            "name": "Зона #11",
+            "id": 13,
+            "name": "Client Zone #13",
             "points": [
                 [
                     618,
@@ -254,7 +254,7 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 8,
             "linked_employee_id": null
         },
         {
@@ -279,12 +279,12 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 10,
             "linked_employee_id": null
         },
         {
-            "id": 11,
-            "name": "Зона #11",
+            "id": 14,
+            "name": "Client Zone #14",
             "points": [
                 [
                     607,
@@ -308,8 +308,8 @@
             "linked_employee_id": 6
         },
         {
-            "id": 12,
-            "name": "Зона #12",
+            "id": 15,
+            "name": "Client Zone #15",
             "points": [
                 [
                     1055,
@@ -356,12 +356,12 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 11,
             "linked_employee_id": null
         },
         {
-            "id": 11,
-            "name": "Зона #11",
+            "id": 16,
+            "name": "Client Zone #16",
             "points": [
                 [
                     352,
@@ -410,12 +410,12 @@
                 ]
             ],
             "zone_type": "employee",
-            "employee_id": null,
+            "employee_id": 12,
             "linked_employee_id": null
         },
         {
-            "id": 11,
-            "name": "Зона #11",
+            "id": 17,
+            "name": "Client Zone #17",
             "points": [
                 [
                     1,
