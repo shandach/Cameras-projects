@@ -179,7 +179,13 @@ class OccupancyEngine:
             try:
                 if zone_type == "client":
                     # === CLIENT VISIT ===
+                    # Resolve linked_employee_id (zone/place ID) → real employee ID
+                    real_employee_id = None
                     if linked_employee_id:
+                        emp = db.get_employee_by_place(linked_employee_id)
+                        real_employee_id = emp['id'] if emp else None
+                    
+                    if real_employee_id:
                         if tracker.checkpoint_db_id:
                             # Finalize existing checkpoint
                             db.finalize_client_visit_checkpoint(
@@ -191,7 +197,7 @@ class OccupancyEngine:
                             # No checkpoint (session < 5 min) — direct INSERT
                             db.save_client_visit(
                                 place_id=tracker.zone_id,
-                                employee_id=linked_employee_id,
+                                employee_id=real_employee_id,
                                 track_id=0,
                                 enter_time=tracker.session_start,
                                 exit_time=datetime.now(),
@@ -200,9 +206,9 @@ class OccupancyEngine:
                         # Calc net service time for display
                         from config import CLIENT_ENTRY_THRESHOLD
                         net_time = max(0, duration - CLIENT_ENTRY_THRESHOLD)
-                        print(f"💾 Client Visit saved: Linked to Emp#{linked_employee_id} ({net_time:.0f}s net)")
+                        print(f"💾 Client Visit saved: Linked to Emp#{real_employee_id} ({net_time:.0f}s net)")
                     else:
-                        print(f"⚠️ Client Visit IGNORED: Zone {tracker.zone_id} has no linked employee!")
+                        print(f"⚠️ Client Visit IGNORED: Zone {tracker.zone_id} has no linked employee (linked_zone={linked_employee_id})!")
                         
                 else:
                     # === EMPLOYEE SESSION ===
@@ -261,11 +267,16 @@ class OccupancyEngine:
             if zone_type == "client":
                 if not linked_employee_id:
                     return
+                # Resolve linked_employee_id (zone/place ID) → real employee ID
+                emp = db.get_employee_by_place(linked_employee_id)
+                real_emp_id = emp['id'] if emp else None
+                if not real_emp_id:
+                    return
                 if tracker.checkpoint_db_id is None:
                     # First checkpoint — INSERT
                     tracker.checkpoint_db_id = db.save_client_visit_checkpoint(
                         place_id=tracker.zone_id,
-                        employee_id=linked_employee_id,
+                        employee_id=real_emp_id,
                         track_id=0,
                         enter_time=tracker.session_start
                     )
