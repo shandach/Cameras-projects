@@ -1,9 +1,14 @@
 """
-Cloud Synchronization Service
-Handles robust "Store-and-Forward" data sync and Heartbeat signals.
+Cloud Synchronization Service v2.0
+Handles robust "Store-and-Forward" data sync with:
+- Exponential backoff with jitter on connection failure
+- Rate limiting for bulk sync after outage
+- Connection health monitoring
+- Heartbeat/Status reports to cloud API
 """
 import time
 import threading
+import random
 import requests
 import os
 import sys
@@ -18,21 +23,28 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # --- Synchronization Configuration ---
-# You should configure these URLs in your .env or backend code
-# For now we use placeholders that will just print logs
 CLOUD_API_BASE = os.getenv("CLOUD_API_URL", "http://localhost:8000/api/v1")
 BRANCH_ID = int(os.getenv("BRANCH_ID", "1"))
+BRANCH_NAME = os.getenv("BRANCH_NAME", "Unknown Branch")
 AUTH_TOKEN = os.getenv("CLOUD_API_TOKEN", "files-secret-token")
 
-SYNC_INTERVAL = 10.0      # Seconds between data sync attempts
-HEARTBEAT_INTERVAL = 30.0 # Seconds between heartbeats
-BATCH_SIZE = 50           # Max records to send per batch
+# Sync tuning
+SYNC_INTERVAL_NORMAL = 10.0       # Seconds between sync attempts (normal)
+SYNC_INTERVAL_MAX = 300.0         # Max backoff interval (5 min cap)
+HEARTBEAT_INTERVAL = 30.0         # Seconds between heartbeat/status reports
+BATCH_SIZE = 50                   # Max records to send per batch
+MAX_BATCHES_PER_CYCLE = 5         # Rate limit: max batches per sync cycle
+BACKOFF_MULTIPLIER = 2.0          # Exponential growth factor
+JITTER_MAX = 5.0                  # Random jitter (seconds) to prevent thundering herd
+
 
 class CloudSyncService:
     """
     Background service that:
-    1. Periodically sends 'Heartbeat' to keep branch status Online (Green)
+    1. Periodically sends 'Heartbeat/Status' to keep branch status Online
     2. Periodically sends 'Unsynced Data' to cloud (Store-and-Forward)
+    3. Uses exponential backoff on connection failure
+    4. Rate-limits catch-up sync after prolonged outage
     """
     
     def __init__(self):
@@ -41,11 +53,18 @@ class CloudSyncService:
         self.last_status_report = 0.0
         self.last_sync = 0.0
         # Track when we last successfully UPLOADED data to cloud
-        # If never migrated, assume now to avoid scary warnings initially
         self.last_successful_upload_time = time.time()
         
+        # Backoff state
+        self._current_sync_interval = SYNC_INTERVAL_NORMAL
+        self._consecutive_failures = 0
+        self._is_healthy = True
+        
+        # Connection pool (lazy init)
+        self._cloud_engine = None
+        self._CloudSession = None
+        
         # Check if we are in "Mock Mode" (no real URL configured + NO DB_DSN)
-        # If DB_DSN is set, we are NOT in mock mode for data sync, even if API is localhost.
         self.mock_mode = "localhost" in CLOUD_API_BASE and not os.getenv("DB_DSN")
         
     def start(self):
@@ -53,7 +72,7 @@ class CloudSyncService:
         if self.is_running:
             return
             
-        print("[INFO] [SyncService] Starting background synchronization...")
+        print(f"[SyncV2] Starting for branch '{BRANCH_NAME}' (ID: {BRANCH_ID})...")
         self.is_running = True
         self.thread = threading.Thread(target=self._service_loop, daemon=True)
         self.thread.start()
@@ -63,30 +82,76 @@ class CloudSyncService:
         if not self.is_running:
             return
             
-        print("[INFO] [SyncService] Stopping...")
+        print("[SyncV2] Stopping...")
         self.is_running = False
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=2.0)
+            self.thread.join(timeout=3.0)
+        
+        # Dispose connection pool
+        if self._cloud_engine:
+            try:
+                self._cloud_engine.dispose()
+                print("[SyncV2] Cloud connection pool disposed.")
+            except Exception:
+                pass
             
     def _service_loop(self):
         """Main loop independent of UI"""
         while self.is_running:
             now = time.time()
             
-            # 1. Sync Status Report (Instead of empty Heartbeat)
+            # 1. Sync Status Report / Heartbeat
             if now - self.last_status_report >= HEARTBEAT_INTERVAL:
                 self._send_sync_status()
                 self.last_status_report = now
                 
-            # 2. Data Sync
-            if now - self.last_sync >= SYNC_INTERVAL:
-                self._sync_data()
+            # 2. Data Sync (with adaptive interval from backoff)
+            if now - self.last_sync >= self._current_sync_interval:
+                success = self._sync_data()
                 self.last_sync = now
                 
-            time.sleep(1.0) # Check every second
+                if success:
+                    self._on_sync_success()
+                else:
+                    self._on_sync_failure()
+                
+            time.sleep(1.0)  # Check every second
+    
+    # --- Backoff Logic ---
+    
+    def _on_sync_success(self):
+        """Restore normal sync interval after successful sync"""
+        if not self._is_healthy:
+            print(f"[SyncV2] ✅ Connection restored after "
+                  f"{self._consecutive_failures} failed attempts!")
+        self._consecutive_failures = 0
+        self._current_sync_interval = SYNC_INTERVAL_NORMAL
+        self._is_healthy = True
+        self.last_successful_upload_time = time.time()
+    
+    def _on_sync_failure(self):
+        """Exponential backoff with jitter on failure"""
+        self._consecutive_failures += 1
+        self._is_healthy = False
+        
+        # Exponential growth: 10 → 20 → 40 → 80 → 160 → 300 (cap)
+        backoff = min(
+            SYNC_INTERVAL_NORMAL * (BACKOFF_MULTIPLIER ** self._consecutive_failures),
+            SYNC_INTERVAL_MAX
+        )
+        # Jitter: prevents all branches from retrying at the exact same moment
+        jitter = random.uniform(0, JITTER_MAX)
+        self._current_sync_interval = backoff + jitter
+        
+        # Log less frequently as failures increase (every 5th attempt after 10)
+        if self._consecutive_failures <= 10 or self._consecutive_failures % 5 == 0:
+            print(f"[SyncV2] ⚠️ Sync failed (attempt #{self._consecutive_failures}). "
+                  f"Next retry in {self._current_sync_interval:.0f}s")
+    
+    # --- Status/Heartbeat ---
             
     def _send_sync_status(self):
-        """Send detailed status report to cloud"""
+        """Send detailed status report to cloud API"""
         # Count unsynced items
         unsynced_sessions = len(db.get_unsynced_sessions(limit=1000))
         unsynced_visits = len(db.get_unsynced_client_visits(limit=1000))
@@ -94,7 +159,10 @@ class CloudSyncService:
         
         payload = {
             "branch_id": BRANCH_ID,
+            "branch_name": BRANCH_NAME,
             "status": "online",
+            "is_healthy": self._is_healthy,
+            "consecutive_failures": self._consecutive_failures,
             "last_successful_sync_timestamp": self.last_successful_upload_time,
             "unsynced_count": total_unsynced,
             "timestamp": time.time()
@@ -112,43 +180,66 @@ class CloudSyncService:
             )
             if response.status_code == 200:
                 last_sync_time = time.ctime(self.last_successful_upload_time)
-                print(f"[INFO] [Status] OK. Last data sync: {last_sync_time}")
+                print(f"[SyncV2] [Status] OK. Last data sync: {last_sync_time}")
             else:
-                print(f"[WARN] [Status] Server error: {response.status_code}")
+                print(f"[SyncV2] [Status] Server error: {response.status_code}")
                 
         except Exception:
-            print("[ERROR] [Status] Failed to send status report")
+            pass  # Status report failures are non-critical
 
     # --- Cloud Connection ---
+    
     def _get_cloud_session(self):
-        """Create a session to the cloud DB"""
+        """Create a session to the cloud DB with connection pooling"""
         if self.mock_mode:
             return None
         try:
-            # Lazy init engine
-            if not hasattr(self, 'cloud_engine'):
-                # Ensure DSN is valid
+            if self._cloud_engine is None:
                 dsn = os.getenv("DB_DSN")
                 if not dsn:
                     return None
                 if dsn.startswith("postgres://"):
                     dsn = dsn.replace("postgres://", "postgresql://", 1)
                 
-                self.cloud_engine = create_engine(dsn, pool_pre_ping=True)
-                self.CloudSession = sessionmaker(bind=self.cloud_engine)
+                self._cloud_engine = create_engine(
+                    dsn,
+                    pool_pre_ping=True,
+                    pool_size=2,              # Small pool for branch monoblock
+                    max_overflow=3,
+                    pool_recycle=1800,         # Recycle connections every 30 min
+                    connect_args={
+                        "connect_timeout": 10,
+                        "options": "-c statement_timeout=30000"  # 30s query timeout
+                    }
+                )
+                self._CloudSession = sessionmaker(bind=self._cloud_engine)
             
-            return self.CloudSession()
+            return self._CloudSession()
         except Exception as e:
-            print(f"[ERROR] [Sync] Failed to connect to cloud: {e}")
+            print(f"[SyncV2] Cloud connection failed: {e}")
             return None
 
+    # --- Data Sync ---
+
     def _sync_data(self):
-        """Upload pending records from DB (Direct to Cloud DB)"""
-        max_batches_per_cycle = 20 
-        batches_processed = 0
+        """Upload pending records with rate limiting"""
+        if self.mock_mode:
+            # In mock mode: still mark as synced for testing
+            sessions_data = db.get_unsynced_sessions(limit=BATCH_SIZE)
+            if sessions_data:
+                ids = [r['id'] for r in sessions_data]
+                db.mark_as_synced("session", ids)
+            
+            visits_data = db.get_unsynced_client_visits(limit=BATCH_SIZE)
+            if visits_data:
+                ids = [r['id'] for r in visits_data]
+                db.mark_as_synced("client_visit", ids)
+            return True
         
-        while batches_processed < max_batches_per_cycle:
-            has_success = False
+        batches_processed = 0
+        any_success = False
+        
+        while batches_processed < MAX_BATCHES_PER_CYCLE:
             data_found = False
             
             # 1. Sync Sessions
@@ -158,10 +249,11 @@ class CloudSyncService:
                 if self._upload_to_cloud_db("session", sessions_data):
                     ids = [r['id'] for r in sessions_data]
                     db.mark_as_synced("session", ids)
-                    print(f"[INFO] [Sync] Uploaded {len(sessions_data)} sessions (Batch {batches_processed+1})")
-                    has_success = True
+                    any_success = True
+                    print(f"[SyncV2] ↑ {len(sessions_data)} sessions "
+                          f"(batch {batches_processed+1})")
                 else:
-                    break
+                    return any_success  # Stop on error
             
             # 2. Sync Client Visits
             visits_data = db.get_unsynced_client_visits(limit=BATCH_SIZE)
@@ -170,76 +262,113 @@ class CloudSyncService:
                 if self._upload_to_cloud_db("client_visit", visits_data):
                     ids = [r['id'] for r in visits_data]
                     db.mark_as_synced("client_visit", ids)
-                    print(f"[INFO] [Sync] Uploaded {len(visits_data)} client visits (Batch {batches_processed+1})")
-                    has_success = True
+                    any_success = True
+                    print(f"[SyncV2] ↑ {len(visits_data)} client visits "
+                          f"(batch {batches_processed+1})")
                 else:
-                    break
+                    return any_success  # Stop on error
                     
-            if has_success:
-                self.last_successful_upload_time = time.time()
-                batches_processed += 1
-            elif not data_found:
-                self.last_successful_upload_time = time.time()
-                break 
-            else:
-                break
+            if not data_found:
+                # Nothing to sync — that's a success
+                return True
+            
+            batches_processed += 1
+            
+            # Rate limiting: brief pause between batches to avoid DB overload
+            if batches_processed < MAX_BATCHES_PER_CYCLE:
+                time.sleep(0.5)
+        
+        if any_success:
+            self.last_successful_upload_time = time.time()
+        return any_success
 
     def _upload_to_cloud_db(self, data_type: str, records: List[Dict]) -> bool:
-        """Push records directly to Cloud PostgreSQL"""
-        if self.mock_mode:
-            return True
-
+        """
+        Push records to Cloud PostgreSQL using INSERT ... ON CONFLICT.
+        Uses composite key (branch_id, local_id) to prevent ID collision
+        between branches while allowing safe retry/upsert.
+        """
         cloud_session = self._get_cloud_session()
         if not cloud_session:
             return False
             
         try:
-            # We must import models inside here or at top level if not circular
-            # To be safe, we import inside
-            from database.models import Session as SessionModel, ClientVisit as VisitModel
+            from sqlalchemy import text
             
             with cloud_session:
                 for r in records:
                     if data_type == "session":
-                        # Convert ISO strings back to datetime if necessary, 
-                        # BUT get_unsynced_sessions returns ISO strings.
-                        # We need to parse them.
-                        orm_obj = SessionModel(
-                            id=r['id'], # Keep same ID
-                            place_id=r['place_id'],
-                            employee_id=r['employee_id'],
-                            start_time=datetime.fromisoformat(r['start_time']),
-                            end_time=datetime.fromisoformat(r['end_time']) if r['end_time'] else None,
-                            duration_seconds=r['duration_seconds'],
-                            session_date=datetime.fromisoformat(r['start_time']).date(),
-                            is_synced=1
-                        )
+                        cloud_session.execute(text("""
+                            INSERT INTO sessions 
+                                (local_id, branch_id, place_id, employee_id,
+                                 start_time, end_time, duration_seconds,
+                                 session_date, is_synced, is_checkpoint, created_at)
+                            VALUES 
+                                (:local_id, :branch_id, :place_id, :employee_id,
+                                 :start_time, :end_time, :duration_seconds,
+                                 :session_date, 1, 0, NOW())
+                            ON CONFLICT (branch_id, local_id) DO UPDATE SET
+                                end_time = EXCLUDED.end_time,
+                                duration_seconds = EXCLUDED.duration_seconds,
+                                is_synced = 1,
+                                is_checkpoint = 0
+                        """), {
+                            "local_id": r['id'],
+                            "branch_id": BRANCH_ID,
+                            "place_id": r['place_id'],
+                            "employee_id": r['employee_id'],
+                            "start_time": datetime.fromisoformat(r['start_time']),
+                            "end_time": (datetime.fromisoformat(r['end_time'])
+                                        if r['end_time'] else None),
+                            "duration_seconds": r['duration_seconds'],
+                            "session_date": datetime.fromisoformat(
+                                r['start_time']).date(),
+                        })
+                        
                     elif data_type == "client_visit":
-                        orm_obj = VisitModel(
-                            id=r['id'],
-                            place_id=r['place_id'],
-                            employee_id=r['employee_id'],
-                            track_id=r['track_id'],
-                            visit_date=datetime.fromisoformat(r['enter_time']).date(),
-                            enter_time=datetime.fromisoformat(r['enter_time']),
-                            exit_time=datetime.fromisoformat(r['exit_time']) if r['exit_time'] else None,
-                            duration_seconds=r['duration_seconds'],
-                            is_synced=1
-                        )
-                    
-                    # Merge prevents error if ID exists
-                    cloud_session.merge(orm_obj)
+                        cloud_session.execute(text("""
+                            INSERT INTO client_visits
+                                (local_id, branch_id, place_id, employee_id,
+                                 track_id, visit_date, enter_time, exit_time,
+                                 duration_seconds, is_synced, is_checkpoint, created_at)
+                            VALUES
+                                (:local_id, :branch_id, :place_id, :employee_id,
+                                 :track_id, :visit_date, :enter_time, :exit_time,
+                                 :duration_seconds, 1, 0, NOW())
+                            ON CONFLICT (branch_id, local_id) DO UPDATE SET
+                                exit_time = EXCLUDED.exit_time,
+                                duration_seconds = EXCLUDED.duration_seconds,
+                                is_synced = 1,
+                                is_checkpoint = 0
+                        """), {
+                            "local_id": r['id'],
+                            "branch_id": BRANCH_ID,
+                            "place_id": r['place_id'],
+                            "employee_id": r['employee_id'],
+                            "track_id": r['track_id'],
+                            "visit_date": datetime.fromisoformat(
+                                r['enter_time']).date(),
+                            "enter_time": datetime.fromisoformat(r['enter_time']),
+                            "exit_time": (datetime.fromisoformat(r['exit_time'])
+                                         if r['exit_time'] else None),
+                            "duration_seconds": r['duration_seconds'],
+                        })
                 
                 cloud_session.commit()
             return True
             
         except Exception as e:
-            print(f"[ERROR] [Sync] Cloud DB Write Failed: {e}")
+            print(f"[SyncV2] ❌ Cloud DB write failed: {e}")
+            try:
+                cloud_session.rollback()
+            except Exception:
+                pass
             return False
             
     def _upload_batch(self, data_type: str, records: List[Dict]) -> bool:
-        """Deprecated HTTP upload (kept for interface compatibility if needed)"""
+        """Alias for backward compatibility"""
         return self._upload_to_cloud_db(data_type, records)
+
 
 # Global instance
 sync_service = CloudSyncService()

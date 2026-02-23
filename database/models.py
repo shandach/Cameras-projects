@@ -78,6 +78,7 @@ class Session(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     place_id = Column(Integer, ForeignKey("places.id", ondelete="SET NULL"), nullable=True)
     employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
+    branch_id = Column(Integer, nullable=True)  # Cloud branch ID for multi-branch
     start_time = Column(DateTime, nullable=False)
     end_time = Column(DateTime, nullable=True)
     duration_seconds = Column(Float, default=0.0)
@@ -101,6 +102,7 @@ class ClientVisit(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     place_id = Column(Integer, ForeignKey("places.id", ondelete="SET NULL"), nullable=True)
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=True)  # Сотрудник, который обслужил
+    branch_id = Column(Integer, nullable=True)  # Cloud branch ID for multi-branch
     track_id = Column(Integer, nullable=False)  # ByteTrack ID
     visit_date = Column(Date, default=date.today)
     enter_time = Column(DateTime, nullable=False)
