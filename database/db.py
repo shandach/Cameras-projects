@@ -248,6 +248,25 @@ class Database:
             if place:
                 place.linked_employee_id = linked_employee_id
                 session.commit()
+
+    def update_place(self, place_id: int, name: str, roi_coordinates: list,
+                     zone_type: str = "employee", linked_employee_id: int = None,
+                     employee_id: int = None) -> bool:
+        """Update an existing place with new data (coordinates, name, type, links)"""
+        import json as json_lib
+        with self.get_session() as session:
+            place = session.query(Place).filter(Place.id == place_id).first()
+            if not place:
+                return False
+            
+            clean_coords = [[int(x), int(y)] for x, y in roi_coordinates]
+            place.name = name
+            place.roi_coordinates = json_lib.dumps(clean_coords)
+            place.zone_type = zone_type
+            place.linked_employee_id = linked_employee_id
+            place.employee_id = employee_id
+            session.commit()
+            return True
     
     # ============ Session Operations ============
     

@@ -139,14 +139,15 @@ class ROIManager:
 
     def _sync_json_to_db(self):
         """
-        Ensure all loaded ROIs exist in DB with MATCHING IDs.
-        Uses save_place_with_id() to force the JSON ID into the DB.
+        Ensure all loaded ROIs exist in DB with MATCHING IDs and data.
+        INSERTs missing zones, UPDATEs existing zones if data differs.
         """
         existing_places = db.get_places_for_camera(self.camera_id)
-        existing_ids = {p['id'] for p in existing_places}
+        existing_map = {p['id']: p for p in existing_places}
         
         for roi in list(self.rois.values()):
-            if roi.id not in existing_ids:
+            if roi.id not in existing_map:
+                # INSERT: zone not in DB
                 print(f"🔄 Syncing ROI '{roi.name}' (ID:{roi.id}) to DB...")
                 try:
                     db.save_place_with_id(
@@ -161,6 +162,29 @@ class ROIManager:
                     print(f"   ✅ Synced '{roi.name}' with ID {roi.id}")
                 except Exception as e:
                     print(f"   ⚠️ Sync failed for {roi.name}: {e}")
+            else:
+                # UPDATE: zone exists — check if data changed
+                db_place = existing_map[roi.id]
+                needs_update = (
+                    roi.name != db_place.get('name') or
+                    roi.zone_type != db_place.get('zone_type', 'employee') or
+                    roi.linked_employee_id != db_place.get('linked_employee_id') or
+                    roi.employee_id != db_place.get('employee_id') or
+                    roi.points != [tuple(p) for p in db_place.get('roi_coordinates', [])]
+                )
+                if needs_update:
+                    try:
+                        db.update_place(
+                            place_id=roi.id,
+                            name=roi.name,
+                            roi_coordinates=roi.points,
+                            zone_type=roi.zone_type,
+                            linked_employee_id=roi.linked_employee_id,
+                            employee_id=roi.employee_id
+                        )
+                        print(f"   🔄 Updated '{roi.name}' (ID:{roi.id}) in DB")
+                    except Exception as e:
+                        print(f"   ⚠️ Update failed for {roi.name}: {e}")
 
     def _load_from_db(self):
         """Load ROIs from database (Fallback)"""
@@ -229,15 +253,18 @@ class ROIManager:
     def save_all_to_storage(self):
         """Save ALL current memory zones to DB and JSON.
         Called when user presses Q to confirm zones.
+        INSERTs new zones, UPDATEs existing zones if data changed.
         """
         saved_count = 0
+        updated_count = 0
         
-        # Get existing DB IDs for this camera
+        # Get existing DB state for this camera
         existing_places = db.get_places_for_camera(self.camera_id)
-        existing_ids = {p['id'] for p in existing_places}
+        existing_map = {p['id']: p for p in existing_places}
         
         for roi in self.rois.values():
-            if roi.id not in existing_ids:
+            if roi.id not in existing_map:
+                # INSERT new zone
                 try:
                     db.save_place_with_id(
                         place_id=roi.id,
@@ -251,14 +278,37 @@ class ROIManager:
                     saved_count += 1
                 except Exception as e:
                     print(f"⚠️ Failed to save zone #{roi.id}: {e}")
+            else:
+                # UPDATE existing zone if data changed
+                db_place = existing_map[roi.id]
+                needs_update = (
+                    roi.name != db_place.get('name') or
+                    roi.zone_type != db_place.get('zone_type', 'employee') or
+                    roi.linked_employee_id != db_place.get('linked_employee_id') or
+                    roi.employee_id != db_place.get('employee_id') or
+                    roi.points != [tuple(p) for p in db_place.get('roi_coordinates', [])]
+                )
+                if needs_update:
+                    try:
+                        db.update_place(
+                            place_id=roi.id,
+                            name=roi.name,
+                            roi_coordinates=roi.points,
+                            zone_type=roi.zone_type,
+                            linked_employee_id=roi.linked_employee_id,
+                            employee_id=roi.employee_id
+                        )
+                        updated_count += 1
+                    except Exception as e:
+                        print(f"⚠️ Failed to update zone #{roi.id}: {e}")
         
         # Save to JSON
         self._save_to_json()
         
-        if saved_count > 0:
-            print(f"💾 Camera {self.camera_id}: Saved {saved_count} new zones to DB + JSON")
+        if saved_count > 0 or updated_count > 0:
+            print(f"💾 Camera {self.camera_id}: {saved_count} new + {updated_count} updated zones → DB + JSON")
         
-        return saved_count
+        return saved_count + updated_count
     
     def delete_roi(self, roi_id: int) -> bool:
         """Delete ROI by ID (keeps historical data in sessions/visits)"""
@@ -467,7 +517,7 @@ class ROIManager:
             emp_id = employee_ids[i] if employee_ids and i < len(employee_ids) else None
             
             # Use fixed ID system
-            roi_id = db.get_next_zone_id()
+            roi_id = self._get_next_available_id()
             name = f"Зона #{roi_id}"
             
             try:
