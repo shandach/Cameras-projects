@@ -18,7 +18,7 @@ from typing import Dict, Optional, Callable
 from datetime import datetime, date, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import ENTRY_THRESHOLD, EXIT_THRESHOLD, CHECKPOINT_INTERVAL
+from config import ENTRY_THRESHOLD, EXIT_THRESHOLD, CHECKPOINT_INTERVAL, tashkent_now
 from database.db import db
 
 
@@ -131,7 +131,7 @@ class OccupancyEngine:
                     tracker.state = ZoneState.OCCUPIED
                     tracker.timer_start_time = tracker.entry_start_time
                     tracker.accumulated_time = 0.0
-                    tracker.session_start = datetime.now() - timedelta(seconds=entry_thresh)
+                    tracker.session_start = tashkent_now() - timedelta(seconds=entry_thresh)
                     tracker.last_checkpoint_time = time.time()  # Start checkpoint timer
                     print(f"✅ Zone {zone_id}: Entry confirmed, timer started")
             else:
@@ -190,7 +190,7 @@ class OccupancyEngine:
                             # Finalize existing checkpoint
                             db.finalize_client_visit_checkpoint(
                                 visit_id=tracker.checkpoint_db_id,
-                                exit_time=datetime.now(),
+                                exit_time=tashkent_now(),
                                 duration_seconds=duration
                             )
                         else:
@@ -200,7 +200,7 @@ class OccupancyEngine:
                                 employee_id=real_employee_id,
                                 track_id=0,
                                 enter_time=tracker.session_start,
-                                exit_time=datetime.now(),
+                                exit_time=tashkent_now(),
                                 duration_seconds=duration
                             )
                         # Calc net service time for display
@@ -219,7 +219,7 @@ class OccupancyEngine:
                         # Finalize existing checkpoint
                         db.finalize_session_checkpoint(
                             session_id=tracker.checkpoint_db_id,
-                            end_time=datetime.now(),
+                            end_time=tashkent_now(),
                             duration_seconds=duration
                         )
                     else:
@@ -227,7 +227,7 @@ class OccupancyEngine:
                         db.save_session(
                             place_id=tracker.zone_id,
                             start_time=tracker.session_start,
-                            end_time=datetime.now(),
+                            end_time=tashkent_now(),
                             duration_seconds=duration,
                             employee_id=employee_id
                         )
@@ -261,7 +261,7 @@ class OccupancyEngine:
         if tracker.timer_start_time:
             duration += (time.time() - tracker.timer_start_time)
         
-        now = datetime.now()
+        now = tashkent_now()
         
         try:
             if zone_type == "client":
@@ -380,7 +380,7 @@ class OccupancyEngine:
                     # Finalize existing checkpoint
                     db.finalize_session_checkpoint(
                         session_id=tracker.checkpoint_db_id,
-                        end_time=datetime.now(),
+                        end_time=tashkent_now(),
                         duration_seconds=duration
                     )
                 else:
@@ -388,7 +388,7 @@ class OccupancyEngine:
                     db.save_session(
                         place_id=tracker.zone_id,
                         start_time=tracker.session_start,
-                        end_time=datetime.now(),
+                        end_time=tashkent_now(),
                         duration_seconds=duration,
                         employee_id=employee_id
                     )

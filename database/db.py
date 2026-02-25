@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session as DBSession
 from database.models import Base, Camera, Place, Session, Employee, ClientVisit
-from config import DATABASE_PATH, DATABASE_DIR, CameraConfig
+from config import DATABASE_PATH, DATABASE_DIR, CameraConfig, tashkent_now
 
 
 class Database:
@@ -464,7 +464,7 @@ class Database:
                 place_id=place_id,
                 employee_id=employee_id,
                 start_time=start_time,
-                end_time=datetime.now(),
+                end_time=tashkent_now(),
                 duration_seconds=0.0,
                 session_date=start_time.date(),
                 is_checkpoint=1
@@ -507,7 +507,7 @@ class Database:
                 track_id=track_id,
                 visit_date=enter_time.date(),
                 enter_time=enter_time,
-                exit_time=datetime.now(),
+                exit_time=tashkent_now(),
                 duration_seconds=0.0,
                 is_checkpoint=1
             )

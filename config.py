@@ -8,6 +8,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
+from datetime import timezone, timedelta, datetime as dt_class
+
+# ============================================
+# TIMEZONE: Tashkent (UTC+5)
+# ============================================
+TASHKENT_TZ = timezone(timedelta(hours=5))
+
+def tashkent_now():
+    """Get current time in Tashkent (UTC+5), returned as naive datetime for DB compatibility"""
+    return dt_class.now(tz=TASHKENT_TZ).replace(tzinfo=None)
 
 # Load environment variables
 BASE_DIR = Path(__file__).parent
