@@ -590,6 +590,26 @@ class Database:
                 for r in records
             ]
 
+    def get_active_checkpoints(self) -> List[dict]:
+        """Get all active checkpoint sessions (currently sitting) for real-time cloud sync"""
+        with self.get_session() as session:
+            records = session.query(Session).filter(
+                Session.is_checkpoint == 1
+            ).all()
+            
+            return [
+                {
+                    "id": r.id,
+                    "place_id": r.place_id,
+                    "employee_id": r.employee_id,
+                    "start_time": r.start_time.isoformat(),
+                    "end_time": r.end_time.isoformat() if r.end_time else None,
+                    "duration_seconds": r.duration_seconds,
+                    "type": "session"
+                }
+                for r in records
+            ]
+
     def get_unsynced_client_visits(self, limit: int = 50) -> List[dict]:
         """Get completed client visits pending synchronization (excludes active checkpoints)"""
         with self.get_session() as session:

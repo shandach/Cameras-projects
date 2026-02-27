@@ -114,6 +114,11 @@ class CloudSyncService:
                     self._on_sync_success()
                 else:
                     self._on_sync_failure()
+            
+            # 3. Checkpoint Sync (active sessions for real-time display)
+            if now - getattr(self, '_last_checkpoint_sync', 0) >= 120:  # Every 2 min
+                self._sync_checkpoints()
+                self._last_checkpoint_sync = now
                 
             time.sleep(1.0)  # Check every second
     
@@ -368,6 +373,67 @@ class CloudSyncService:
     def _upload_batch(self, data_type: str, records: List[Dict]) -> bool:
         """Alias for backward compatibility"""
         return self._upload_to_cloud_db(data_type, records)
+
+    def _sync_checkpoints(self):
+        """
+        Sync active session checkpoints to cloud for real-time display.
+        These are sessions where the employee is currently sitting.
+        Uses is_checkpoint=1 in the cloud so the backend knows they're temporary.
+        When the session finalizes, the normal sync overwrites with is_checkpoint=0.
+        """
+        if self.mock_mode:
+            return
+        
+        checkpoints = db.get_active_checkpoints()
+        if not checkpoints:
+            return
+        
+        cloud_session = self._get_cloud_session()
+        if not cloud_session:
+            return
+        
+        try:
+            from sqlalchemy import text
+            from config import tashkent_now
+            
+            now = tashkent_now()
+            
+            with cloud_session:
+                for r in checkpoints:
+                    start_time = datetime.fromisoformat(r['start_time'])
+                    duration = (now - start_time).total_seconds()
+                    
+                    cloud_session.execute(text("""
+                        INSERT INTO sessions 
+                            (local_id, branch_id, place_id, employee_id,
+                             start_time, end_time, duration_seconds,
+                             session_date, is_synced, is_checkpoint, created_at)
+                        VALUES 
+                            (:local_id, :branch_id, :place_id, :employee_id,
+                             :start_time, NULL, :duration_seconds,
+                             :session_date, 1, 1, NOW())
+                        ON CONFLICT (branch_id, local_id) DO UPDATE SET
+                            duration_seconds = EXCLUDED.duration_seconds,
+                            is_checkpoint = 1
+                    """), {
+                        "local_id": r['id'],
+                        "branch_id": BRANCH_ID,
+                        "place_id": r['place_id'],
+                        "employee_id": r['employee_id'],
+                        "start_time": start_time,
+                        "duration_seconds": duration,
+                        "session_date": start_time.date(),
+                    })
+                
+                cloud_session.commit()
+            print(f"[SyncV2] 🔄 {len(checkpoints)} active checkpoint(s) synced")
+            
+        except Exception as e:
+            print(f"[SyncV2] ⚠️ Checkpoint sync failed: {e}")
+            try:
+                cloud_session.rollback()
+            except Exception:
+                pass
 
 
 # Global instance
