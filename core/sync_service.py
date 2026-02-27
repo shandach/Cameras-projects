@@ -87,6 +87,16 @@ class CloudSyncService:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=3.0)
         
+        # Force final sync: push any newly-finalized sessions to cloud
+        print("[SyncV2] Running final sync before shutdown...")
+        try:
+            self._sync_data()
+        except Exception as e:
+            print(f"[SyncV2] Final sync failed: {e}")
+        
+        # Close ALL remaining checkpoints in the cloud for this branch
+        self._close_cloud_checkpoints()
+        
         # Dispose connection pool
         if self._cloud_engine:
             try:
@@ -116,7 +126,7 @@ class CloudSyncService:
                     self._on_sync_failure()
             
             # 3. Checkpoint Sync (active sessions for real-time display)
-            if now - getattr(self, '_last_checkpoint_sync', 0) >= 120:  # Every 2 min
+            if now - getattr(self, '_last_checkpoint_sync', 0) >= 60:  # Every 1 min
                 self._sync_checkpoints()
                 self._last_checkpoint_sync = now
                 
@@ -431,6 +441,48 @@ class CloudSyncService:
             
         except Exception as e:
             print(f"[SyncV2] ⚠️ Checkpoint sync failed: {e}")
+            try:
+                cloud_session.rollback()
+            except Exception:
+                pass
+
+    def _close_cloud_checkpoints(self):
+        """
+        Close ALL checkpoint sessions in the cloud for this branch.
+        Called on graceful shutdown. Handles the case where occupancy_engine
+        finalized sessions locally but sync didn't push them yet, or
+        where checkpoints were synced but never finalized.
+        """
+        if self.mock_mode:
+            return
+        
+        cloud_session = self._get_cloud_session()
+        if not cloud_session:
+            return
+        
+        try:
+            from sqlalchemy import text
+            
+            with cloud_session:
+                result = cloud_session.execute(text("""
+                    UPDATE sessions 
+                    SET is_checkpoint = 0,
+                        end_time = NOW(),
+                        duration_seconds = EXTRACT(EPOCH FROM (NOW() - start_time))
+                    WHERE branch_id = :branch_id 
+                      AND is_checkpoint = 1
+                """), {"branch_id": BRANCH_ID})
+                
+                cloud_session.commit()
+                
+                rows = result.rowcount
+                if rows > 0:
+                    print(f"[SyncV2] 🔒 Closed {rows} checkpoint(s) in cloud on shutdown")
+                else:
+                    print("[SyncV2] ✅ No open checkpoints in cloud")
+                    
+        except Exception as e:
+            print(f"[SyncV2] ⚠️ Failed to close cloud checkpoints: {e}")
             try:
                 cloud_session.rollback()
             except Exception:
