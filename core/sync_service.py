@@ -415,6 +415,7 @@ class CloudSyncService:
                         ON CONFLICT (branch_id, local_id) DO UPDATE SET
                             duration_seconds = EXCLUDED.duration_seconds,
                             is_checkpoint = 1
+                        WHERE sessions.is_checkpoint = 1
                     """), {
                         "local_id": r['id'],
                         "branch_id": BRANCH_ID,
