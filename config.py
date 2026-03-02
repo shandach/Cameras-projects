@@ -110,8 +110,8 @@ CLIENT_EXIT_THRESHOLD = float(os.getenv("CLIENT_EXIT_THRESHOLD", "3.0"))    # 3 
 CHECKPOINT_INTERVAL = float(os.getenv("CHECKPOINT_INTERVAL", "60.0"))  # 1 min = 60 sec
 
 # Work hours (Tashkent timezone UZT +5)
-WORK_START = os.getenv("WORK_START", "08:45")
-WORK_END = os.getenv("WORK_END", "18:15")
+WORK_START = os.getenv("WORK_START", "09:00")
+WORK_END = os.getenv("WORK_END", "18:00")
 
 # Restricted days where no sessions should be recorded (0=Mon...5=Sat, 6=Sun)
 RESTRICTED_DAYS = [int(x) for x in os.getenv("RESTRICTED_DAYS", "5,6").split(",") if x.strip()]
