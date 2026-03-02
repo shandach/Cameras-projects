@@ -113,6 +113,10 @@ CHECKPOINT_INTERVAL = float(os.getenv("CHECKPOINT_INTERVAL", "60.0"))  # 1 min =
 WORK_START = os.getenv("WORK_START", "08:45")
 WORK_END = os.getenv("WORK_END", "18:15")
 
+# Restricted days where no sessions should be recorded (0=Mon...5=Sat, 6=Sun)
+RESTRICTED_DAYS = [int(x) for x in os.getenv("RESTRICTED_DAYS", "6").split(",") if x.strip()]
+
+
 # Auto-cycle settings
 AUTO_CYCLE_INTERVAL = float(os.getenv("AUTO_CYCLE_INTERVAL", "10.0"))  # seconds between switches
 AUTO_CYCLE_PAUSE_DURATION = 30.0  # seconds to pause after manual switch
