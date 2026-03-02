@@ -106,10 +106,16 @@ class OccupancyEngine:
         current_time = time.time()
         
         # Determine thresholds based on zone type
-        from config import ENTRY_THRESHOLD, EXIT_THRESHOLD, CLIENT_ENTRY_THRESHOLD, CLIENT_EXIT_THRESHOLD, RESTRICTED_DAYS
+        from config import (
+            ENTRY_THRESHOLD, EXIT_THRESHOLD, CLIENT_ENTRY_THRESHOLD, 
+            CLIENT_EXIT_THRESHOLD, RESTRICTED_DAYS, WORK_START, WORK_END
+        )
         
-        # Block session mapping on weekends/restricted days
-        if tashkent_now().weekday() in RESTRICTED_DAYS:
+        now_tashkent = tashkent_now()
+        current_time_str = now_tashkent.strftime("%H:%M")
+        
+        # Block session mapping on weekends/restricted days AND outside working hours
+        if now_tashkent.weekday() in RESTRICTED_DAYS or not (WORK_START <= current_time_str <= WORK_END):
             is_person_present = False
         
         if zone_type == "client":
