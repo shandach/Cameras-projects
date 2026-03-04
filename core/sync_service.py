@@ -26,7 +26,7 @@ from sqlalchemy.orm import sessionmaker
 CLOUD_API_BASE = os.getenv("CLOUD_API_URL", "http://localhost:8000/api/v1")
 BRANCH_ID = int(os.getenv("BRANCH_ID", "1"))
 BRANCH_NAME = os.getenv("BRANCH_NAME", "Unknown Branch")
-AUTH_TOKEN = os.getenv("CLOUD_API_TOKEN", "files-secret-token")
+AUTH_TOKEN = os.getenv("CLOUD_API_TOKEN", "xalq-secure-2026")
 
 # Sync tuning
 SYNC_INTERVAL_NORMAL = 10.0       # Seconds between sync attempts (normal)
