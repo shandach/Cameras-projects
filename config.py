@@ -93,8 +93,10 @@ if not CAMERAS:
 
 
 # Detection settings
-YOLO_MODEL = os.getenv("YOLO_MODEL", "yolov8s.pt")  # Switched to Small model for better accuracy
+YOLO_MODEL = os.getenv("YOLO_MODEL", "yolov10s.pt")  # YOLOv10s for better pose/occlusion detection
 DETECTION_CONFIDENCE = float(os.getenv("DETECTION_CONFIDENCE", "0.35"))
+YOLO_IMGSZ = int(os.getenv("YOLO_IMGSZ", "960"))  # Input resolution (higher = better far detection)
+YOLO_USE_OPENVINO = os.getenv("YOLO_USE_OPENVINO", "true").lower() == "true"  # Auto-select OpenVINO
 PERSON_CLASS_ID = 0  # COCO class 0 = person
 
 # Occupancy Engine settings (in seconds)

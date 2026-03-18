@@ -6,9 +6,9 @@ opencv-python>=4.8.0
 numpy>=1.24.0
 
 # AI/ML Detection
-ultralytics>=8.0.0  # YOLOv8
-mediapipe>=0.10.0   # Pose detection (backup)
+ultralytics>=8.3.0  # YOLOv10 support
 torch>=2.0.0
+openvino>=2024.0.0  # Intel CPU optimization
 
 # Database
 sqlalchemy>=2.0.0
