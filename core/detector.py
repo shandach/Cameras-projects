@@ -70,11 +70,15 @@ class PersonDetector:
                 print(f"🚀 Loading OpenVINO model: {openvino_path}")
                 try:
                     self.model = YOLO(openvino_path)
+                    # Warmup & validate model (OpenVINO IR validation usually happens on first inference)
+                    dummy = np.zeros((YOLO_IMGSZ, YOLO_IMGSZ, 3), dtype=np.uint8)
+                    self.model(dummy, verbose=False)
                     self.backend = "OpenVINO"
                     print(f"✅ YOLO model loaded (OpenVINO backend, imgsz={YOLO_IMGSZ})")
                 except Exception as e:
                     print(f"⚠️ OpenVINO load failed ({e}), falling back to .pt")
                     self.model = YOLO(model_path)
+                    self.backend = "PyTorch"
                     print(f"✅ YOLO model loaded (PyTorch fallback, imgsz={YOLO_IMGSZ})")
             else:
                 print(f"🤖 Loading YOLO model: {model_path}")
