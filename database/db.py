@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session as DBSession
-from database.models import Base, Camera, Place, Session, Employee, ClientVisit
+from database.models import Base, Camera, Place, Session, Employee, ClientVisit, ClientCrossing
 from config import DATABASE_PATH, DATABASE_DIR, CameraConfig, tashkent_now
 
 
@@ -96,6 +96,13 @@ class Database:
         with self.get_session() as session:
             return session.query(Camera).filter(
                 Camera.external_id == external_id
+            ).first()
+
+    def get_camera_by_id(self, camera_id: int) -> Optional[Camera]:
+        """Get camera by internal ID"""
+        with self.get_session() as session:
+            return session.query(Camera).filter(
+                Camera.id == camera_id
             ).first()
     
     # ============ Place Operations ============
@@ -632,13 +639,52 @@ class Database:
                 for r in records
             ]
 
+    def save_client_crossing(self, camera_id: int, track_id: int, crossed_at: datetime) -> int:
+        """Save a new line crossing event (visitor entrance)"""
+        with self.get_session() as session:
+            crossing = ClientCrossing(
+                camera_id=camera_id,
+                track_id=track_id,
+                crossed_at=crossed_at,
+                log_date=crossed_at.date()
+            )
+            session.add(crossing)
+            session.commit()
+            return crossing.id
+
+    def get_unsynced_client_crossings(self, limit: int = 50) -> List[dict]:
+        """Get unsynced client crossing events"""
+        with self.get_session() as session:
+            records = session.query(ClientCrossing).filter(
+                ClientCrossing.is_synced == 0
+            ).limit(limit).all()
+            
+            return [
+                {
+                    "id": r.id,
+                    "camera_id": r.camera_id,
+                    "track_id": r.track_id,
+                    "crossed_at": r.crossed_at.isoformat(),
+                    "log_date": r.log_date.isoformat(),
+                    "type": "client_crossing"
+                }
+                for r in records
+            ]
+
     def mark_as_synced(self, table_type: str, record_ids: List[int]):
         """Mark records as synced"""
         if not record_ids:
             return
             
-        model = Session if table_type == "session" else ClientVisit
-        
+        if table_type == "session":
+            model = Session
+        elif table_type == "client_visit":
+            model = ClientVisit
+        elif table_type == "client_crossing":
+            model = ClientCrossing
+        else:
+            return
+            
         with self.get_session() as session:
             session.query(model).filter(
                 model.id.in_(record_ids)

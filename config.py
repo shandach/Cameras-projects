@@ -111,6 +111,11 @@ CLIENT_EXIT_THRESHOLD = float(os.getenv("CLIENT_EXIT_THRESHOLD", "3.0"))    # 3 
 # Checkpoint interval (save active sessions to DB periodically)
 CHECKPOINT_INTERVAL = float(os.getenv("CHECKPOINT_INTERVAL", "60.0"))  # 1 min = 60 sec
 
+# Line Crossing Engine settings
+LINE_HISTORY_SIZE = int(os.getenv("LINE_HISTORY_SIZE", "7"))
+LINE_COOLDOWN_SEC = float(os.getenv("LINE_COOLDOWN_SEC", "1.5"))
+LINE_TOLERANCE = float(os.getenv("LINE_TOLERANCE", "5.0"))
+
 # Work hours (Tashkent timezone UZT +5)
 WORK_START = os.getenv("WORK_START", "09:00")
 WORK_END = os.getenv("WORK_END", "18:00")

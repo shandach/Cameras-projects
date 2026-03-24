@@ -170,7 +170,8 @@ class CloudSyncService:
         # Count unsynced items
         unsynced_sessions = len(db.get_unsynced_sessions(limit=1000))
         unsynced_visits = len(db.get_unsynced_client_visits(limit=1000))
-        total_unsynced = unsynced_sessions + unsynced_visits
+        unsynced_crossings = len(db.get_unsynced_client_crossings(limit=1000))
+        total_unsynced = unsynced_sessions + unsynced_visits + unsynced_crossings
         
         payload = {
             "branch_id": BRANCH_ID,
@@ -249,6 +250,11 @@ class CloudSyncService:
             if visits_data:
                 ids = [r['id'] for r in visits_data]
                 db.mark_as_synced("client_visit", ids)
+                
+            crossings_data = db.get_unsynced_client_crossings(limit=BATCH_SIZE)
+            if crossings_data:
+                ids = [r['id'] for r in crossings_data]
+                db.mark_as_synced("client_crossing", ids)
             return True
         
         batches_processed = 0
@@ -279,6 +285,19 @@ class CloudSyncService:
                     db.mark_as_synced("client_visit", ids)
                     any_success = True
                     print(f"[SyncV2] ↑ {len(visits_data)} client visits "
+                          f"(batch {batches_processed+1})")
+                else:
+                    return any_success  # Stop on error
+                    
+            # 3. Sync Client Crossings (Line)
+            crossings_data = db.get_unsynced_client_crossings(limit=BATCH_SIZE)
+            if crossings_data:
+                data_found = True
+                if self._upload_to_cloud_db("client_crossing", crossings_data):
+                    ids = [r['id'] for r in crossings_data]
+                    db.mark_as_synced("client_crossing", ids)
+                    any_success = True
+                    print(f"[SyncV2] ↑ {len(crossings_data)} client crossings "
                           f"(batch {batches_processed+1})")
                 else:
                     return any_success  # Stop on error
@@ -367,6 +386,37 @@ class CloudSyncService:
                             "exit_time": (datetime.fromisoformat(r['exit_time'])
                                          if r['exit_time'] else None),
                             "duration_seconds": r['duration_seconds'],
+                        })
+                        
+                    elif data_type == "client_crossing":
+                        # Fetch camera name for backward compatibility with front-end
+                        camera_name = "Unknown Camera"
+                        camera = db.get_camera_by_id(r['camera_id'])
+                        if camera:
+                            camera_name = camera.name
+
+                        cloud_session.execute(text("""
+                            INSERT INTO client_crossings
+                                (branch_id, branch_name, camera_name, track_id,
+                                 crossed_at, log_date, created_at)
+                            SELECT 
+                                :branch_id, :branch_name, :camera_name, :track_id,
+                                :crossed_at, :log_date, NOW()
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM client_crossings 
+                                WHERE branch_id = :branch_id 
+                                  AND camera_name = :camera_name 
+                                  AND track_id = :track_id 
+                                  AND crossed_at = :crossed_at
+                            )
+                        """), {
+                            "local_id": r['id'],
+                            "branch_id": str(BRANCH_ID),  # String matching client-counter
+                            "branch_name": BRANCH_NAME,
+                            "camera_name": camera_name,   # Using name instead of id
+                            "track_id": r['track_id'],
+                            "crossed_at": datetime.fromisoformat(r['crossed_at']),
+                            "log_date": datetime.fromisoformat(r['log_date']).date(),
                         })
                 
                 cloud_session.commit()

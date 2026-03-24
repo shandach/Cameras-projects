@@ -16,6 +16,8 @@ env/
 # Database
 *.db
 database/*.db
+database/*.db-shm
+database/*.db-wal
 
 # IDE
 .idea/
@@ -28,6 +30,7 @@ Thumbs.db
 
 # YOLO models (downloaded automatically)
 *.pt
+yolov10s_openvino_model/
 
 # MediaPipe models (downloaded automatically)
 *.task

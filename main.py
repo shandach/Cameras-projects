@@ -27,7 +27,7 @@ import cv2
 import sys
 from pathlib import Path
 import time
-from datetime import date
+from datetime import date, datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -39,7 +39,10 @@ from core.detector import PersonDetector
 from core.roi_manager import ROIManager
 from core.occupancy_engine import OccupancyEngine
 from core.sync_service import sync_service
+from core.line_manager import line_manager
+from core.line_crossing_engine import LineCrossingEngine
 from gui.roi_editor import ROIEditor, create_mouse_callback
+from gui.line_editor import LineEditor
 from gui.display import draw_timer_overlay, draw_stats_panel, draw_help_panel, format_duration, draw_employee_stats_overlay
 from database.db import db
 
@@ -68,14 +71,36 @@ class CameraMonitor:
         self.roi_manager = ROIManager(self.camera_db_id)
         self.occupancy_engine = OccupancyEngine()
         self.roi_editor = ROIEditor(f"Camera {camera_config.id}")
+        self.line_editor = LineEditor(f"Line Editor {camera_config.id}")
         
         self.is_connected = False
         
+        # Load crossing line if exists
+        self.line_engine = None
+        self._init_line_engine()
+
         # CPU Optimization: Frame Skipping
         self.frame_skip_counter = 0
         self.SKIP_FRAMES = 2  # Process 1, Skip 2 (Effective 1/3 FPS for detection)
         # We store the *results* of detection to redraw them on skipped frames
         self.last_detections = []
+        
+    def _init_line_engine(self):
+        """Initialize line crossing engine if configured"""
+        from config import LINE_HISTORY_SIZE, LINE_COOLDOWN_SEC, LINE_TOLERANCE
+        line_conf = line_manager.get_line(self.camera_db_id)
+        if line_conf:
+            self.line_engine = LineCrossingEngine(
+                camera_id=self.camera_db_id,
+                line_start=line_conf['start'],
+                line_end=line_conf['end'],
+                direction=line_conf.get('direction', 'down'),
+                history_size=LINE_HISTORY_SIZE,
+                cooldown_seconds=LINE_COOLDOWN_SEC,
+                line_tolerance=LINE_TOLERANCE
+            )
+        else:
+            self.line_engine = None
     
     def connect(self) -> bool:
         """Connect to camera stream"""
@@ -137,6 +162,22 @@ class CameraMonitor:
         # Draw person detections
         frame = self.detector.draw_detections(frame, detections)
         
+        # Check if currently in working hours
+        from config import RESTRICTED_DAYS, WORK_START, WORK_END, tashkent_now
+        now_tz = tashkent_now()
+        current_time_str = now_tz.strftime("%H:%M")
+        is_working_hours = not (now_tz.weekday() in RESTRICTED_DAYS or not (WORK_START <= current_time_str <= WORK_END))
+
+        # Line Crossing Engine check & draw
+        if self.line_engine:
+            if is_working_hours:
+                new_cross = self.line_engine.update(detections)
+                if new_cross:
+                    for tid in new_cross:
+                        db.save_client_crossing(self.camera_db_id, tid, now_tz)
+                    
+            frame = self.line_engine.draw_line_and_stats(frame, draw_stats=True)
+            
         # Draw employee stats overlay
         roi_stats = {}
         roi_positions = {}
@@ -208,6 +249,12 @@ class CameraMonitor:
         if self.roi_editor.is_drawing:
             frame = self.roi_editor.draw_current(frame)
         
+        # Draw Line editor overlay if drawing
+        if self.line_editor.is_drawing:
+            # Requires mouse position for live preview. Passed by waitKey loop normally.
+            # Fallback to no-mouse preview handled inside line_editor
+            frame = self.line_editor.draw_current(frame)
+            
         return frame, len(detections)
     
     def get_stats(self) -> dict:
@@ -286,6 +333,10 @@ class WorkplaceMonitor:
         # OSD message state (for on-screen confirmations)
         self._osd_message = None
         self._osd_expire_time = 0
+        
+        # Mouse tracking for Line Editor live preview
+        self.mouse_x = -1
+        self.mouse_y = -1
     
     @property
     def current_camera(self) -> CameraMonitor:
@@ -394,9 +445,9 @@ class WorkplaceMonitor:
                     if self.show_help:
                         display_frame = draw_help_panel(display_frame)
                     
-                    # Draw ROI editor
-                    if self.current_camera.roi_editor.is_drawing:
-                        display_frame = self.current_camera.roi_editor.draw_current(display_frame)
+                    # Draw line editor
+                    if self.current_camera.line_editor.is_drawing:
+                        display_frame = self.current_camera.line_editor.draw_current(display_frame, self.mouse_x, self.mouse_y)
                     
                     # Draw OSD (on-screen messages)
                     self._draw_osd(display_frame)
@@ -587,6 +638,12 @@ class WorkplaceMonitor:
                     self._pending_roi_points = points
                     self._waiting_zone_type = True
                     print("📋 ROI saved. Press: E=employee zone, C=client zone")
+            elif camera.line_editor.is_drawing:
+                points = camera.line_editor.finish_line()
+                if points:
+                    line_manager.set_line(camera.camera_db_id, points[0], points[1], direction='down')
+                    camera._init_line_engine()
+                    print("📏 Line saved!")
         
         elif key == ord('e') or key == ord('E'):
             # Employee zone
@@ -600,10 +657,12 @@ class WorkplaceMonitor:
         elif key == 27:  # Escape
             if camera.roi_editor.is_drawing:
                 camera.roi_editor.cancel_drawing()
+            if camera.line_editor.is_drawing:
+                camera.line_editor.cancel_drawing()
             if hasattr(self, '_waiting_zone_type'):
                 self._waiting_zone_type = False
                 self._pending_roi_points = None
-                print("❌ ROI cancelled")
+                print("❌ Drawing cancelled")
         
         elif key == ord('x') or key == ord('X'):
             # Delete last ROI (Moved from D)
@@ -672,6 +731,33 @@ class WorkplaceMonitor:
              # Clear all ROIs for current camera (moved from C)
             camera.roi_manager.delete_all_rois()
             print("🧹 All ROIs cleared for current camera")
+
+        elif key == ord('o') or key == ord('O'):
+            # Start drawing counting line
+            camera.line_editor.start_drawing()
+            print("📏 Drawing Line... Press ENTER when done")
+            
+        elif key == ord('i') or key == ord('I'):
+            # Change line direction
+            if camera.line_engine:
+                dirs = ['down', 'right', 'up', 'left']
+                current = camera.line_engine.direction
+                next_dir = dirs[(dirs.index(current) + 1) % 4]
+                camera.line_engine.direction = next_dir
+                camera.line_engine._in_from, camera.line_engine._in_to = camera.line_engine._compute_in_sides()
+                line_manager.set_line(camera.camera_db_id, camera.line_engine.line_start, camera.line_engine.line_end, next_dir)
+                print(f"🔄 Line direction changed to {next_dir}")
+                self._show_osd(f"Line Direction: {next_dir.upper()}", 2)
+            else:
+                print("⚠️ Draw a line first (O key)")
+
+        elif key == ord('p') or key == ord('P'):
+            # Delete line
+            if camera.line_engine:
+                line_manager.delete_line(camera.camera_db_id)
+                camera.line_engine = None
+                print("🗑️ Line deleted")
+                self._show_osd("Line Deleted", 2)
         
         elif key == ord('s') or key == ord('S'):
             self.show_stats = not self.show_stats
@@ -716,9 +802,17 @@ class WorkplaceMonitor:
         """Handle mouse events - delegate to ROI editor or handle deletion"""
         camera = self.current_camera
         
-        # Priority 1: Drawing mode
+        if event == cv2.EVENT_MOUSEMOVE:
+            self.mouse_x, self.mouse_y = x, y
+        
+        # Priority 1: Drawing ROI
         if camera.roi_editor.is_drawing:
             camera.roi_editor.handle_mouse(event, x, y, flags, param)
+            return
+
+        # Priority 1.5: Drawing Line
+        if camera.line_editor.is_drawing:
+            camera.line_editor.handle_mouse(event, x, y, flags, param)
             return
 
         # Priority 2: Right Click -> Delete ROI under cursor

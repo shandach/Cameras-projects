@@ -22,6 +22,7 @@ class Camera(Base):
     
     # Relationships
     places = relationship("Place", back_populates="camera")
+    crossings = relationship("ClientCrossing", back_populates="camera")
     
     def __repr__(self):
         return f"<Camera(id={self.id}, name='{self.name}')>"
@@ -118,4 +119,27 @@ class ClientVisit(Base):
     
     def __repr__(self):
         return f"<ClientVisit(id={self.id}, track_id={self.track_id}, synced={self.is_synced})>"
+
+
+class ClientCrossing(Base):
+    """
+    Line crossing event representing a person walking into the premises.
+    Used for general traffic counting.
+    """
+    __tablename__ = "client_crossings"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    camera_id = Column(Integer, ForeignKey("cameras.id", ondelete="SET NULL"), nullable=True)
+    branch_id = Column(Integer, nullable=True)  # Cloud branch ID for multi-branch
+    track_id = Column(Integer, nullable=False)  # Centroid Tracker ID
+    crossed_at = Column(DateTime, nullable=False)
+    log_date = Column(Date, nullable=False)
+    is_synced = Column(Integer, default=0)  # 0=False, 1=True
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    camera = relationship("Camera", back_populates="crossings")
+    
+    def __repr__(self):
+        return f"<ClientCrossing(id={self.id}, camera={self.camera_id}, track={self.track_id})>"
 
